@@ -1,0 +1,22 @@
+version: "3.9"
+
+services:
+  backend:
+    build: ./backend
+    container_name: flask-backend
+    volumes:
+      - ./backend/hmx.db:/app/hmx.db
+    ports:
+      - "5000:5000"
+    restart: always
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    container_name: react-frontend
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    restart: always

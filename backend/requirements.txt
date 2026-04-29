@@ -1,0 +1,13 @@
+Flask==3.0.2
+Flask-Cors==4.0.0
+Flask-SocketIO==5.3.6
+PyJWT==2.8.0
+Werkzeug==3.0.1
+requests==2.31.0
+cryptography==41.0.7
+gunicorn
+eventlet
+--extra-index-url https://phonepe.mycloudrepo.io/public/repositories/phonepe-pg-sdk-python
+phonepe-pg-sdk-python
+python-dotenv
+setuptools<70
