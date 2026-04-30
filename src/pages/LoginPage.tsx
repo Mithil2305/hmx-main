@@ -49,12 +49,20 @@ const LoginPage: React.FC = () => {
         navigate('/editor', { replace: true });
       } else if (user.role === 'referral') {
         navigate('/referral', { replace: true });
-      } else if (user.role === 'client' && !bbdCompleted) {
-        // Redirect to BBD form for first-time client users
-        navigate('/business-booking', { replace: true });
+      } else if (user.role === 'business' || user.role === 'client') {
+        // Redirect to BBD form for first-time business/client users
+        if (!bbdCompleted) {
+          navigate('/business-booking', { replace: true });
+        } else {
+          navigate('/client', { replace: true });
+        }
+      } else if (user.role === 'guest') {
+        // Guest users redirect to guest booking
+        navigate('/guest-booking', { replace: true });
       } else {
-        // Regular client with completed BBD
-        navigate('/client', { replace: true });
+        // Fallback redirect
+        navigate('/home', { replace: true });
+      }
       }
     }
   }, [isAuthenticated, user, navigate]);

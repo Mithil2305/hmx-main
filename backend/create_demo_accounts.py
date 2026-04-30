@@ -77,6 +77,9 @@ def create_referral_account():
         'commission_rate': 10.00,
         'referral_code': 'DEMO_REF_001',
         'category': 'corporate'
+        'password_hash': DEMO_PASSWORD_HASH,
+        'category': 'corporate',
+        'password_hash': DEMO_PASSWORD_HASH,
     }
     
     try:
@@ -88,13 +91,14 @@ def create_referral_account():
         
         cursor.execute('''
             INSERT INTO referrals (
-                name, email, phone, status, commission_rate, 
+                name, email, phone, password_hash, status, commission_rate, 
                 referral_code, category, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             referral_data['name'],
             referral_data['email'],
             referral_data['phone'],
+                        referral_data['password_hash'],
             referral_data['status'],
             referral_data['commission_rate'],
             referral_data['referral_code'],

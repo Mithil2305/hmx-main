@@ -800,6 +800,7 @@ def init_db():
             CREATE TABLE IF NOT EXISTS referrals (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT,
+                                password_hash TEXT,
                 email TEXT UNIQUE,
                 phone TEXT,
                 status TEXT DEFAULT 'pending',
@@ -816,6 +817,7 @@ def init_db():
         ''')
     else:
         # Add missing columns to existing referrals table
+                    ('password_hash', 'TEXT'),
         new_columns = [
             ('commission_rate', 'DECIMAL(5,2)'),
             ('total_earnings', 'DECIMAL(10,2) DEFAULT 0'),
@@ -2009,6 +2011,7 @@ def login():
                 print("Password verified for pilot")
                 token_data = {
                     'user_id': pilot_dict['id'],
+                                        'email': pilot_dict['email'],
                     'role': 'pilot',
                     'exp': datetime.utcnow() + timedelta(days=1)
                 }
@@ -2058,6 +2061,7 @@ def login():
                 print("Password verified for editor")
                 token_data = {
                     'user_id': editor_dict['id'],
+                                        'email': editor_dict['email'],
                     'role': 'editor',
                     'exp': datetime.utcnow() + timedelta(days=1)
                 }
@@ -2082,6 +2086,71 @@ def login():
         cursor.execute('SELECT * FROM users WHERE email = ?', (email,))
         user = cursor.fetchone()
 
+        # Check referrals table
+        print("Editor not found, checking referrals table...")
+        cursor.execute('SELECT * FROM referrals WHERE email = ?', (email,))
+        referral = cursor.fetchone()
+
+        # Check referrals table
+        print("Editor not found, checking referrals table...")
+        cursor.execute('SELECT * FROM referrals WHERE email = ?', (email,))
+        referral = cursor.fetchone()
+
+        # Check referrals table
+        if not user:
+            print("User not found in users table, checking referrals table...")
+            cursor.execute('SELECT * FROM referrals WHERE email = ?', (email,))
+            referral = cursor.fetchone()
+            
+            if referral:
+                print("Found referral in database")
+                referral_dict = dict(referral)
+                print(f"Referral status: {referral_dict['status']}")
+                
+                # Check if referral has password_hash
+                password_field = referral_dict.get('password_hash')
+                if password_field:
+                    print(f"Referral password hash: {password_field[:20]}...")
+                else:
+                    print("No password field found for referral")
+                    return jsonify({'message': 'Invalid email or password'}), 401
+                
+                if referral_dict['status'] == 'pending':
+                    print("Referral is pending approval")
+                    return jsonify({'message': 'Your account is pending approval'}), 403
+                
+                print("Verifying referral password...")
+                password_check = verify_password(password, password_field)
+                print(f"Password verification result: {password_check}")
+                
+                if password_check:
+                    print("Password verified for referral")
+                    token_data = {
+                        'user_id': referral_dict['id'],
+                        'email': referral_dict['email'],
+                        'role': 'referral',
+                        'exp': datetime.utcnow() + timedelta(days=1)
+                    }
+                    print(f"Token data: {token_data}")
+                    token = jwt.encode(token_data, app.config['SECRET_KEY'])
+                    print("Generated token for referral")
+                    
+                    response = jsonify({
+                        'token': token,
+                        'role': 'referral',
+                        'user_id': referral_dict['id']
+                    })
+                    response.headers.add('Access-Control-Allow-Origin', get_cors_origin())
+                    response.headers.add('Access-Control-Allow-Credentials', 'true')
+                    return response
+                else:
+                    print("Invalid password for referral")
+                    return jsonify({'message': 'Invalid email or password'}), 401
+            else:
+                print("Referral not found, user not found in any table")
+                return jsonify({'message': 'Invalid email or password'}), 401
+        
+        # Check users table (for all user types including clients and admins)
         if user:
             user_dict = dict(user)
             user_role = user_dict.get('role', 'admin')
