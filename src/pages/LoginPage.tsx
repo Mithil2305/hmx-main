@@ -63,7 +63,6 @@ const LoginPage: React.FC = () => {
         // Fallback redirect
         navigate('/home', { replace: true });
       }
-      }
     }
   }, [isAuthenticated, user, navigate]);
 

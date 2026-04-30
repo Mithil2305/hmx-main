@@ -400,6 +400,58 @@ def init_business_booking_routes(app, get_db, send_email_async=None, generate_ra
         finally:
             conn.close()
 
+    @business_bp.route('/api/business/booking-status', methods=['GET'])
+    def get_current_bbd_status():
+        actor, err = require_role('client', 'business', 'admin')
+        if err:
+            return err
+
+        conn = get_db()
+        cursor = conn.cursor()
+        try:
+            cursor.execute("SELECT bbd_form_submitted FROM users WHERE id = ?", (actor['user_id'],))
+            user = cursor.fetchone()
+            if not user:
+                return jsonify({'success': False, 'error': 'User not found'}), 404
+
+            cursor.execute("""
+                SELECT id, status, total_cost, payment_status
+                FROM bookings
+                WHERE user_id = ? AND booking_category = 'business'
+                ORDER BY created_at DESC LIMIT 1
+            """, (actor['user_id'],))
+            booking = cursor.fetchone()
+
+            return jsonify({
+                'success': True,
+                'hasCompletedBBD': bool(user['bbd_form_submitted']),
+                'bbd_submitted': bool(user['bbd_form_submitted']),
+                'booking': dict(booking) if booking else None
+            })
+        finally:
+            conn.close()
+
+    @business_bp.route('/api/business/update-bbd-status', methods=['POST'])
+    def update_current_bbd_status():
+        actor, err = require_role('client', 'business', 'admin')
+        if err:
+            return err
+
+        data = request.get_json(silent=True) or {}
+        completed = bool(data.get('hasCompletedBBD', False))
+
+        conn = get_db()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                "UPDATE users SET bbd_form_submitted = ? WHERE id = ?",
+                (1 if completed else 0, actor['user_id'])
+            )
+            conn.commit()
+            return jsonify({'success': True, 'hasCompletedBBD': completed})
+        finally:
+            conn.close()
+
     # Area Mismatch Routes
     @business_bp.route('/api/business/report-mismatch', methods=['POST'])
     def report_mismatch():

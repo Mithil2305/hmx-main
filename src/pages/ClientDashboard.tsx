@@ -55,7 +55,17 @@ const ClientDashboard: React.FC = () => {
 						headers: { Authorization: `Bearer ${token}` },
 					}),
 				]);
-				setUserData(verifyRes.data);
+				const fetchedUser = verifyRes.data;
+				// Ensure only client/business users can access this dashboard
+				if (fetchedUser.role !== 'client' && fetchedUser.role !== 'business') {
+					const roleRoutes: Record<string, string> = {
+						admin: '/admin', pilot: '/pilot',
+						editor: '/editor', referral: '/referral', guest: '/guest-booking',
+					};
+					navigate(roleRoutes[fetchedUser.role] || '/login', { replace: true });
+					return;
+				}
+				setUserData(fetchedUser);
 				if (bookingsRes.data.success) {
 					setBookings(bookingsRes.data.bookings || []);
 					setStats(bookingsRes.data.stats);

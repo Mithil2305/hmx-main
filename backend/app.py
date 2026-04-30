@@ -97,7 +97,7 @@ active_connections = {}
 
 # Configuration
 app.config['SECRET_KEY'] = 'your-secret-key-here'  # Change this in production
-DATABASE = 'hmx.db'  # Changed from 'backend/hmx.db' to just 'hmx.db'
+DATABASE = os.path.join(os.path.dirname(__file__), 'hmx.db')
 
 # Email Configuration
 EMAIL_CONFIG = {
@@ -800,7 +800,7 @@ def init_db():
             CREATE TABLE IF NOT EXISTS referrals (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT,
-                                password_hash TEXT,
+                password_hash TEXT,
                 email TEXT UNIQUE,
                 phone TEXT,
                 status TEXT DEFAULT 'pending',
@@ -817,7 +817,7 @@ def init_db():
         ''')
     else:
         # Add missing columns to existing referrals table
-                    ('password_hash', 'TEXT'),
+        ('password_hash', 'TEXT'),
         new_columns = [
             ('commission_rate', 'DECIMAL(5,2)'),
             ('total_earnings', 'DECIMAL(10,2) DEFAULT 0'),
@@ -2086,17 +2086,7 @@ def login():
         cursor.execute('SELECT * FROM users WHERE email = ?', (email,))
         user = cursor.fetchone()
 
-        # Check referrals table
-        print("Editor not found, checking referrals table...")
-        cursor.execute('SELECT * FROM referrals WHERE email = ?', (email,))
-        referral = cursor.fetchone()
-
-        # Check referrals table
-        print("Editor not found, checking referrals table...")
-        cursor.execute('SELECT * FROM referrals WHERE email = ?', (email,))
-        referral = cursor.fetchone()
-
-        # Check referrals table
+        # Only check referrals table if user not found in users table
         if not user:
             print("User not found in users table, checking referrals table...")
             cursor.execute('SELECT * FROM referrals WHERE email = ?', (email,))
@@ -2202,8 +2192,6 @@ def login():
         else:
             print("User not found in users table")
             return jsonify({'message': 'Invalid email or password'}), 401
-        
-        conn.close()
 
     except Exception as e:
         print(f"Unexpected error during login: {str(e)}")

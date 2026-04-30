@@ -23,7 +23,7 @@ import {
 	Eye,
 } from "lucide-react";
 import axios from "axios";
-import { authService } from "../services/api";
+import { useAuth } from "../contexts/AuthContext";
 import VideoSubmissions from "../components/editor/VideoSubmissions";
 import BookingDetailsModal from "../components/common/BookingDetailsModal";
 
@@ -51,7 +51,21 @@ const EditorDashboard: React.FC = () => {
 					headers: { Authorization: `Bearer ${token}` },
 				});
 				console.log("User data received:", response.data);
-				setUserData(response.data);
+				const fetchedUser = response.data;
+				// Ensure only editors can access this dashboard
+				if (fetchedUser.role !== "editor") {
+					const roleRoutes: Record<string, string> = {
+						admin: "/admin",
+						client: "/client",
+						business: "/client",
+						pilot: "/pilot",
+						referral: "/referral",
+						guest: "/guest-booking",
+					};
+					navigate(roleRoutes[fetchedUser.role] || "/login", { replace: true });
+					return;
+				}
+				setUserData(fetchedUser);
 				await fetchStats();
 			} catch (err) {
 				console.error("Failed to fetch user data:", err);
@@ -147,8 +161,10 @@ const EditorDashboard: React.FC = () => {
 		},
 	];
 
+	const { logout } = useAuth();
+
 	const handleLogout = () => {
-		authService.logout();
+		logout();
 		navigate("/login", { replace: true });
 	};
 
