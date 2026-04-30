@@ -3,12 +3,33 @@ from datetime import datetime
 import os
 import uuid
 import json
+import jwt
 from werkzeug.utils import secure_filename
 from werkzeug.security import generate_password_hash
 from utils.state_machine import can_transition, normalize_booking_status, BOOKING_STATUSES
 
 def init_business_booking_routes(app, get_db, send_email_async=None, generate_random_password=None):
     business_bp = Blueprint('business_booking', __name__)
+
+    def require_role(*roles):
+        token = request.headers.get('Authorization', '')
+        if token.startswith('Bearer '):
+            token = token.split(' ', 1)[1].strip()
+
+        if not token:
+            return None, (jsonify({'success': False, 'error': 'Token is missing'}), 401)
+
+        try:
+            decoded = jwt.decode(token, app.config['SECRET_KEY'], algorithms=['HS256'])
+        except Exception:
+            return None, (jsonify({'success': False, 'error': 'Invalid token'}), 401)
+
+        role = decoded.get('role')
+        user_id = decoded.get('user_id')
+        if roles and role not in roles:
+            return None, (jsonify({'success': False, 'error': 'Forbidden'}), 403)
+
+        return {'role': role, 'user_id': user_id}, None
 
     # Helper function to calculate cost
     def calculate_business_cost(category, area_sqft, num_floors=1, business_size='medium'):
@@ -260,6 +281,10 @@ def init_business_booking_routes(app, get_db, send_email_async=None, generate_ra
 
     @business_bp.route('/api/admin/business-bookings', methods=['GET'])
     def get_all_business_bookings():
+        actor, err = require_role('admin')
+        if err:
+            return err
+
         conn = get_db()
         cursor = conn.cursor()
         try:
@@ -300,6 +325,10 @@ def init_business_booking_routes(app, get_db, send_email_async=None, generate_ra
 
     @business_bp.route('/api/admin/business-bookings/<int:booking_id>/status', methods=['PUT'])
     def update_business_booking_status(booking_id):
+        actor, err = require_role('admin')
+        if err:
+            return err
+
         conn = get_db()
         cursor = conn.cursor()
         try:
@@ -339,6 +368,13 @@ def init_business_booking_routes(app, get_db, send_email_async=None, generate_ra
 
     @business_bp.route('/api/business/status/<int:user_id>', methods=['GET'])
     def get_bbd_status(user_id):
+        actor, err = require_role('client', 'admin')
+        if err:
+            return err
+
+        if actor['role'] == 'client' and int(actor['user_id']) != int(user_id):
+            return jsonify({'success': False, 'error': 'Forbidden'}), 403
+
         conn = get_db()
         cursor = conn.cursor()
         try:
@@ -367,6 +403,10 @@ def init_business_booking_routes(app, get_db, send_email_async=None, generate_ra
     # Area Mismatch Routes
     @business_bp.route('/api/business/report-mismatch', methods=['POST'])
     def report_mismatch():
+        actor, err = require_role('pilot', 'admin')
+        if err:
+            return err
+
         data = request.get_json()
         booking_id = data.get('booking_id')
         actual_area = float(data.get('actual_area', 0))
@@ -393,8 +433,7 @@ def init_business_booking_routes(app, get_db, send_email_async=None, generate_ra
                 UPDATE bookings 
                 SET actual_area_size = ?, 
                     area_mismatch_status = 'reported',
-                    extra_cost = ?,
-                    status = 'locked_mismatch'
+                    extra_cost = ?
                 WHERE id = ?
             """, (actual_area, extra_cost, booking_id))
             
@@ -405,6 +444,10 @@ def init_business_booking_routes(app, get_db, send_email_async=None, generate_ra
 
     @business_bp.route('/api/business/resolve-mismatch', methods=['POST'])
     def resolve_mismatch():
+        actor, err = require_role('client', 'admin')
+        if err:
+            return err
+
         data = request.get_json()
         booking_id = data.get('booking_id')
         choice = data.get('choice') # 'pay_extra' or 'keep_original'
@@ -425,16 +468,14 @@ def init_business_booking_routes(app, get_db, send_email_async=None, generate_ra
                     SET total_cost = ?, 
                         area_mismatch_status = 'resolved',
                         area_mismatch_choice = 'pay_extra',
-                        status = 'approved', -- Unlocked
-                        payment_status = 'pending_extra'
+                        payment_status = 'PENDING'
                     WHERE id = ?
                 """, (new_total, booking_id))
             else:
                 cursor.execute("""
                     UPDATE bookings 
                     SET area_mismatch_status = 'resolved',
-                        area_mismatch_choice = 'keep_original',
-                        status = 'approved' -- Unlocked
+                        area_mismatch_choice = 'keep_original'
                     WHERE id = ?
                 """, (booking_id,))
             

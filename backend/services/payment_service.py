@@ -1,5 +1,23 @@
+from utils.state_machine import normalize_booking_status
+
+
+class PaymentDistributionError(Exception):
+    pass
+
+
 def distribute_payment(booking):
-    total = float(booking.get("total_cost") or booking.get("payment_amount") or 0)
+    booking_status = normalize_booking_status(booking.get("status"))
+    if booking_status != "APPROVED":
+        raise PaymentDistributionError("Payment can only be distributed after approval")
+
+    total = float(
+        booking.get("amount")
+        or booking.get("payment_amount")
+        or booking.get("total_cost")
+        or 0
+    )
+    if total <= 0:
+        raise PaymentDistributionError("Invalid booking amount for distribution")
 
     pilot_share = round(total * 0.5, 2)
     editor_share = round(total * 0.3, 2)
@@ -11,5 +29,5 @@ def distribute_payment(booking):
         "pilot_share": pilot_share,
         "editor_share": editor_share,
         "platform_share": platform_share,
-        "transfer_status": "simulated",
+        "transfer_status": "released",
     }

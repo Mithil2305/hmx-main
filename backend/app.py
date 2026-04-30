@@ -20,15 +20,17 @@ _otp_handler.setFormatter(logging.Formatter('%(asctime)s  %(message)s'))
 _otp_logger.addHandler(_otp_handler)
 from routes.businessBooking import init_business_booking_routes
 from routes.payment_routes import init_payment_routes
-from utils.state_machine import can_transition, normalize_booking_status
+from utils.state_machine import can_transition, normalize_booking_status, BOOKING_STATUSES, normalize_payment_status
 from services.booking_service import (
     BookingLifecycleError,
     append_edited_version,
     append_revision_history,
+    get_actor_id,
     set_auto_approval_deadline,
+    transition_booking,
     update_booking_status,
 )
-from services.payment_service import distribute_payment
+from services.payment_service import distribute_payment, PaymentDistributionError
 from services.notification_service import emit_booking_notification
 import jwt
 from datetime import datetime, timedelta
@@ -593,9 +595,10 @@ def init_db():
     total_cost REAL,
     custom_quote TEXT,
 
-    # Status / meta
-    status TEXT DEFAULT 'REQUESTED',
-    payment_status TEXT DEFAULT 'ESCROW',
+    -- Status / meta
+    status TEXT DEFAULT 'REQUESTED' CHECK (status IN ('REQUESTED','PILOT_ASSIGNED','SHOOT_COMPLETED','EDITING','EDIT_SUBMITTED','REVISION_REQUESTED','APPROVED','COMPLETED')),
+    payment_status TEXT DEFAULT 'ESCROW' CHECK (payment_status IN ('PENDING','ESCROW','RELEASED')),
+    amount DECIMAL(10,2),
     payment_amount DECIMAL(10,2),
     payment_date TIMESTAMP,
     completed_date TIMESTAMP,
@@ -646,6 +649,7 @@ def init_db():
         "base_package_cost": "REAL",
         "total_cost": "REAL",
         "custom_quote": "TEXT",
+        "amount": "DECIMAL(10,2)",
         "description": "TEXT",
         "delivery_video_link": "TEXT",
         "pilot_earnings": "DECIMAL(10,2)",
@@ -2417,7 +2421,7 @@ def get_bookings(current_user):
                 LEFT JOIN pilots p ON b.pilot_id = p.id
                 WHERE b.user_id = ?
                 ORDER BY b.created_at DESC
-            ''', (current_user['id'],))
+            ''', (get_actor_id(current_user),))
 
         bookings = cursor.fetchall()
         conn.close()
@@ -2439,10 +2443,9 @@ def claim_booking(current_user, booking_id):
         conn = get_db()
         cursor = conn.cursor()
         
-        # Check if booking exists and can transition to PILOT_ASSIGNED
-        cursor.execute('SELECT * FROM bookings WHERE id = ?', (booking_id,))
+        cursor.execute('SELECT id, pilot_id, status FROM bookings WHERE id = ?', (booking_id,))
         booking = cursor.fetchone()
-        
+
         if not booking:
             conn.close()
             return jsonify({'message': 'Booking not found'}), 404
@@ -2451,17 +2454,22 @@ def claim_booking(current_user, booking_id):
         if not can_transition(current_status, 'PILOT_ASSIGNED'):
             conn.close()
             return jsonify({'error': 'Invalid status transition'}), 400
-            
-        # Update booking with pilot assignment
-        pilot_id = current_user.get('id', current_user.get('user_id'))
+
+        # Atomic assignment prevents two pilots claiming the same booking concurrently.
+        pilot_id = get_actor_id(current_user)
         cursor.execute(
             '''
             UPDATE bookings
-            SET pilot_id = ?, status = ?, updated_at = CURRENT_TIMESTAMP
-            WHERE id = ?
+            SET pilot_id = ?, status = 'PILOT_ASSIGNED', updated_at = CURRENT_TIMESTAMP
+            WHERE id = ? AND pilot_id IS NULL AND status = 'REQUESTED'
             ''',
-            (pilot_id, 'PILOT_ASSIGNED', booking_id),
+            (pilot_id, booking_id),
         )
+
+        if cursor.rowcount == 0:
+            conn.rollback()
+            conn.close()
+            return jsonify({'message': 'Booking was already claimed'}), 409
             
         conn.commit()
         print(f"Booking {booking_id} claimed by pilot {pilot_id}")
@@ -2479,6 +2487,49 @@ def claim_booking(current_user, booking_id):
         return jsonify({'message': 'Failed to claim booking'}), 500
 
 
+@app.route('/api/bookings/<int:booking_id>/pilot-cancel', methods=['POST'])
+@token_required
+def pilot_cancel_booking(current_user, booking_id):
+    if current_user['role'] != 'pilot':
+        return jsonify({'message': 'Only pilots can cancel accepted bookings'}), 403
+
+    conn = get_db()
+    cursor = conn.cursor()
+    try:
+        pilot_id = get_actor_id(current_user)
+        cursor.execute('SELECT id, pilot_id, status FROM bookings WHERE id = ?', (booking_id,))
+        booking = cursor.fetchone()
+        if not booking:
+            conn.close()
+            return jsonify({'message': 'Booking not found'}), 404
+
+        if booking['pilot_id'] != pilot_id:
+            conn.close()
+            return jsonify({'message': 'Unauthorized'}), 403
+
+        if normalize_booking_status(booking['status']) != 'PILOT_ASSIGNED':
+            conn.close()
+            return jsonify({'message': 'Only accepted bookings can be cancelled by pilot'}), 400
+
+        # Explicit requeue path for pilot cancellation edge case.
+        cursor.execute(
+            '''
+            UPDATE bookings
+            SET pilot_id = NULL, status = 'REQUESTED', updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            ''',
+            (booking_id,),
+        )
+        conn.commit()
+        emit_booking_notification(socketio, booking_id, 'PILOT_CANCELLED_REASSIGN', {'notify': ['admin', 'client']})
+        conn.close()
+        return jsonify({'message': 'Booking returned to REQUESTED for reassignment'})
+    except Exception as e:
+        conn.rollback()
+        conn.close()
+        return jsonify({'message': f'Failed to cancel booking: {str(e)}'}), 500
+
+
 @app.route('/api/bookings/<int:booking_id>/upload-footage', methods=['POST'])
 @token_required
 def upload_booking_footage(current_user, booking_id):
@@ -2493,7 +2544,7 @@ def upload_booking_footage(current_user, booking_id):
     try:
         conn = get_db()
         cursor = conn.cursor()
-        pilot_id = current_user.get('id', current_user.get('user_id'))
+        pilot_id = get_actor_id(current_user)
 
         cursor.execute('SELECT * FROM bookings WHERE id = ?', (booking_id,))
         booking = cursor.fetchone()
@@ -2511,24 +2562,14 @@ def upload_booking_footage(current_user, booking_id):
             return jsonify({'error': 'Invalid status transition'}), 400
 
         cursor.execute(
-            'UPDATE bookings SET raw_video_url = ?, status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-            (raw_video_url, 'SHOOT_COMPLETED', booking_id),
+            'UPDATE bookings SET raw_video_url = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+            (raw_video_url, booking_id),
         )
+        transition_booking(cursor, booking_id, current_status, 'SHOOT_COMPLETED')
 
-        # Auto-assign first active editor if none is set.
         editor_id = booking['editor_id']
-        if not editor_id:
-            cursor.execute("SELECT id FROM editors WHERE status = 'active' ORDER BY created_at ASC LIMIT 1")
-            editor = cursor.fetchone()
-            editor_id = editor['id'] if editor else None
-
         if editor_id:
-            if not can_transition('SHOOT_COMPLETED', 'EDITING'):
-                raise BookingLifecycleError('Invalid status transition')
-            cursor.execute(
-                'UPDATE bookings SET editor_id = ?, status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-                (editor_id, 'EDITING', booking_id),
-            )
+            transition_booking(cursor, booking_id, 'SHOOT_COMPLETED', 'EDITING')
 
         conn.commit()
         emit_booking_notification(
@@ -2538,6 +2579,9 @@ def upload_booking_footage(current_user, booking_id):
             {'editor_id': editor_id, 'notify': ['editor']},
         )
         conn.close()
+        if not editor_id:
+            return jsonify({'message': 'Footage uploaded. Awaiting editor assignment before editing starts.'})
+
         return jsonify({'message': 'Footage uploaded successfully', 'editor_id': editor_id})
     except BookingLifecycleError as e:
         return jsonify({'error': str(e)}), 400
@@ -2566,11 +2610,11 @@ def assign_booking_editor(current_user, booking_id):
             conn.close()
             return jsonify({'message': 'Booking not found'}), 404
 
-        cursor.execute('SELECT id FROM editors WHERE id = ?', (editor_id,))
+        cursor.execute('SELECT id FROM editors WHERE id = ? AND status = "active"', (editor_id,))
         editor = cursor.fetchone()
         if not editor:
             conn.close()
-            return jsonify({'message': 'Editor not found'}), 404
+            return jsonify({'message': 'Editor not found or inactive'}), 404
 
         current_status = normalize_booking_status(booking['status'])
         if not can_transition(current_status, 'EDITING'):
@@ -2578,9 +2622,10 @@ def assign_booking_editor(current_user, booking_id):
             return jsonify({'error': 'Invalid status transition'}), 400
 
         cursor.execute(
-            'UPDATE bookings SET editor_id = ?, status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-            (editor_id, 'EDITING', booking_id),
+            'UPDATE bookings SET editor_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+            (editor_id, booking_id),
         )
+        transition_booking(cursor, booking_id, current_status, 'EDITING')
         conn.commit()
         emit_booking_notification(
             socketio,
@@ -2609,7 +2654,7 @@ def submit_booking_edit(current_user, booking_id):
     try:
         conn = get_db()
         cursor = conn.cursor()
-        editor_id = current_user.get('id', current_user.get('user_id'))
+        editor_id = get_actor_id(current_user)
 
         cursor.execute('SELECT * FROM bookings WHERE id = ?', (booking_id,))
         booking = cursor.fetchone()
@@ -2628,9 +2673,10 @@ def submit_booking_edit(current_user, booking_id):
 
         append_edited_version(cursor, dict(booking), edited_url)
         cursor.execute(
-            'UPDATE bookings SET delivery_video_link = ?, status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-            (edited_url, 'EDIT_SUBMITTED', booking_id),
+            'UPDATE bookings SET delivery_video_link = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+            (edited_url, booking_id),
         )
+        transition_booking(cursor, booking_id, current_status, 'EDIT_SUBMITTED')
         set_auto_approval_deadline(cursor, booking_id, days=3)
         conn.commit()
         emit_booking_notification(socketio, booking_id, 'EDIT_SUBMITTED', {'notify': ['client']})
@@ -2644,8 +2690,8 @@ def submit_booking_edit(current_user, booking_id):
 @app.route('/api/bookings/<int:booking_id>/approve', methods=['POST'])
 @token_required
 def approve_booking_edit(current_user, booking_id):
-    if current_user['role'] not in ('client', 'admin'):
-        return jsonify({'message': 'Only client/admin can approve edits'}), 403
+    if current_user['role'] != 'client':
+        return jsonify({'message': 'Only client can approve edits'}), 403
 
     try:
         conn = get_db()
@@ -2656,7 +2702,7 @@ def approve_booking_edit(current_user, booking_id):
             conn.close()
             return jsonify({'message': 'Booking not found'}), 404
 
-        if current_user['role'] == 'client' and booking['user_id'] != current_user['id']:
+        if booking['user_id'] != get_actor_id(current_user):
             conn.close()
             return jsonify({'message': 'Unauthorized'}), 403
 
@@ -2665,12 +2711,14 @@ def approve_booking_edit(current_user, booking_id):
             conn.close()
             return jsonify({'error': 'Invalid status transition'}), 400
 
-        update_booking_status(cursor, booking_id, current_status, 'APPROVED')
-        distribution = distribute_payment(dict(booking))
+        transition_booking(cursor, booking_id, current_status, 'APPROVED')
+        booking_payload = dict(booking)
+        booking_payload['status'] = 'APPROVED'
+        distribution = distribute_payment(booking_payload)
         cursor.execute(
             '''
             UPDATE bookings
-            SET pilot_earnings = ?, editor_earnings = ?, hmx_earnings = ?, payment_split_status = ?, payment_status = ?, updated_at = CURRENT_TIMESTAMP
+            SET pilot_earnings = ?, editor_earnings = ?, hmx_earnings = ?, payment_split_status = ?, payment_status = ?, amount = COALESCE(amount, payment_amount, total_cost), updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
             ''',
             (
@@ -2678,17 +2726,19 @@ def approve_booking_edit(current_user, booking_id):
                 distribution['editor_share'],
                 distribution['platform_share'],
                 distribution['transfer_status'],
-                'DISTRIBUTED',
+                'RELEASED',
                 booking_id,
             ),
         )
 
-        update_booking_status(cursor, booking_id, 'APPROVED', 'COMPLETED')
+        transition_booking(cursor, booking_id, 'APPROVED', 'COMPLETED')
         conn.commit()
         emit_booking_notification(socketio, booking_id, 'APPROVED', {'notify': ['client', 'pilot', 'editor']})
         conn.close()
         return jsonify({'message': 'Booking approved and completed', 'distribution': distribution})
     except BookingLifecycleError as e:
+        return jsonify({'error': str(e)}), 400
+    except PaymentDistributionError as e:
         return jsonify({'error': str(e)}), 400
     except Exception as e:
         print(f"Error approving booking: {str(e)}")
@@ -2698,8 +2748,8 @@ def approve_booking_edit(current_user, booking_id):
 @app.route('/api/bookings/<int:booking_id>/revision', methods=['POST'])
 @token_required
 def request_booking_revision(current_user, booking_id):
-    if current_user['role'] not in ('client', 'admin'):
-        return jsonify({'message': 'Only client/admin can request revision'}), 403
+    if current_user['role'] != 'client':
+        return jsonify({'message': 'Only client can request revision'}), 403
 
     data = request.get_json() or {}
     reason = data.get('reason', '').strip()
@@ -2713,7 +2763,7 @@ def request_booking_revision(current_user, booking_id):
             conn.close()
             return jsonify({'message': 'Booking not found'}), 404
 
-        if current_user['role'] == 'client' and booking['user_id'] != current_user['id']:
+        if booking['user_id'] != get_actor_id(current_user):
             conn.close()
             return jsonify({'message': 'Unauthorized'}), 403
 
@@ -2723,7 +2773,7 @@ def request_booking_revision(current_user, booking_id):
             return jsonify({'error': 'Invalid status transition'}), 400
 
         append_revision_history(cursor, dict(booking), reason)
-        update_booking_status(cursor, booking_id, current_status, 'REVISION_REQUESTED')
+        transition_booking(cursor, booking_id, current_status, 'REVISION_REQUESTED')
         conn.commit()
         emit_booking_notification(
             socketio,
@@ -2738,6 +2788,42 @@ def request_booking_revision(current_user, booking_id):
     except Exception as e:
         print(f"Error requesting revision: {str(e)}")
         return jsonify({'message': 'Failed to request revision'}), 500
+
+
+@app.route('/api/bookings/<int:booking_id>/start-revision', methods=['POST'])
+@token_required
+def start_booking_revision(current_user, booking_id):
+    if current_user['role'] != 'editor':
+        return jsonify({'message': 'Only editors can start revision editing'}), 403
+
+    conn = get_db()
+    cursor = conn.cursor()
+    try:
+        editor_id = get_actor_id(current_user)
+        cursor.execute('SELECT * FROM bookings WHERE id = ?', (booking_id,))
+        booking = cursor.fetchone()
+        if not booking:
+            conn.close()
+            return jsonify({'message': 'Booking not found'}), 404
+
+        if booking['editor_id'] != editor_id:
+            conn.close()
+            return jsonify({'message': 'Unauthorized'}), 403
+
+        current_status = normalize_booking_status(booking['status'])
+        transition_booking(cursor, booking_id, current_status, 'EDITING')
+        conn.commit()
+        emit_booking_notification(socketio, booking_id, 'REVISION_EDITING_STARTED', {'notify': ['client', 'editor']})
+        conn.close()
+        return jsonify({'message': 'Revision moved back to editing'})
+    except BookingLifecycleError as e:
+        conn.rollback()
+        conn.close()
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        conn.rollback()
+        conn.close()
+        return jsonify({'message': f'Failed to start revision editing: {str(e)}'}), 500
 
 
 @app.route('/api/bookings/lifecycle/maintenance', methods=['POST'])
@@ -2807,8 +2893,31 @@ def lifecycle_maintenance(current_user):
             except Exception:
                 continue
             if now >= deadline and can_transition('EDIT_SUBMITTED', 'APPROVED'):
-                update_booking_status(cursor, row['id'], 'EDIT_SUBMITTED', 'APPROVED')
-                update_booking_status(cursor, row['id'], 'APPROVED', 'COMPLETED')
+                cursor.execute('SELECT * FROM bookings WHERE id = ?', (row['id'],))
+                booking = cursor.fetchone()
+                if not booking:
+                    continue
+
+                transition_booking(cursor, row['id'], 'EDIT_SUBMITTED', 'APPROVED')
+                booking_payload = dict(booking)
+                booking_payload['status'] = 'APPROVED'
+                distribution = distribute_payment(booking_payload)
+                cursor.execute(
+                    '''
+                    UPDATE bookings
+                    SET pilot_earnings = ?, editor_earnings = ?, hmx_earnings = ?, payment_split_status = ?, payment_status = ?, amount = COALESCE(amount, payment_amount, total_cost), updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    ''',
+                    (
+                        distribution['pilot_share'],
+                        distribution['editor_share'],
+                        distribution['platform_share'],
+                        distribution['transfer_status'],
+                        'RELEASED',
+                        row['id'],
+                    ),
+                )
+                transition_booking(cursor, row['id'], 'APPROVED', 'COMPLETED')
                 auto_approved.append(row['id'])
                 emit_booking_notification(socketio, row['id'], 'AUTO_APPROVED', {'notify': ['client', 'editor', 'pilot']})
 
@@ -2844,34 +2953,34 @@ def update_booking(current_user, booking_id):
         if not booking:
             return jsonify({'message': 'Booking not found'}), 404
             
-        if current_user['role'] == 'client' and booking['user_id'] != current_user['id']:
+        if current_user['role'] == 'client' and booking['user_id'] != get_actor_id(current_user):
             return jsonify({'message': 'Unauthorized'}), 403
+
+        if 'status' in data:
+            return jsonify({'message': 'Direct status updates are not allowed on this endpoint'}), 400
             
         # Update booking based on user role
         if current_user['role'] == 'admin':
-            # Admin can update any field
             cursor.execute('''
                 UPDATE bookings 
-                SET status = ?, pilot_notes = ?, client_notes = ?, updated_at = CURRENT_TIMESTAMP
+                SET pilot_notes = ?, client_notes = ?, updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
-            ''', (data.get('status'), data.get('pilot_notes'), data.get('client_notes'), booking_id))
+            ''', (data.get('pilot_notes'), data.get('client_notes'), booking_id))
         elif current_user['role'] == 'pilot':
-            # Pilots can update status and notes for their assigned bookings
-            pilot_id = current_user.get('id', current_user.get('user_id'))
+            pilot_id = get_actor_id(current_user)
             if booking['pilot_id'] != pilot_id:
                 return jsonify({'message': 'Unauthorized'}), 403
             cursor.execute('''
                 UPDATE bookings
-                SET status = ?, pilot_notes = ?, updated_at = CURRENT_TIMESTAMP
+                SET pilot_notes = ?, updated_at = CURRENT_TIMESTAMP
                 WHERE id = ? AND pilot_id = ?
-            ''', (data.get('status'), data.get('pilot_notes'), booking_id, pilot_id))
+            ''', (data.get('pilot_notes'), booking_id, pilot_id))
         else:
-            # Clients can update their notes
             cursor.execute('''
                 UPDATE bookings 
                 SET client_notes = ?, updated_at = CURRENT_TIMESTAMP
                 WHERE id = ? AND user_id = ?
-            ''', (data.get('client_notes'), booking_id, current_user['id']))
+            ''', (data.get('client_notes'), booking_id, get_actor_id(current_user)))
             
         conn.commit()
         print("Booking updated successfully")
@@ -2899,7 +3008,7 @@ def delete_booking(current_user, booking_id):
 
         # Permission checks: clients can delete their own, admins can delete; others forbidden
         if current_user['role'] == 'client':
-            if booking['user_id'] != current_user['id']:
+            if booking['user_id'] != get_actor_id(current_user):
                 conn.close()
                 return jsonify({'message': 'Unauthorized'}), 403
         elif current_user['role'] != 'admin':
@@ -2937,7 +3046,7 @@ def complete_booking(current_user, booking_id):
         cursor = conn.cursor()
         
         # Legacy alias for upload-footage
-        pilot_id = current_user.get('id', current_user.get('user_id'))
+        pilot_id = get_actor_id(current_user)
         cursor.execute('SELECT * FROM bookings WHERE id = ? AND pilot_id = ?', (booking_id, pilot_id))
         booking = cursor.fetchone()
         
@@ -2953,11 +3062,12 @@ def complete_booking(current_user, booking_id):
         cursor.execute(
             '''
             UPDATE bookings
-            SET raw_video_url = ?, drive_link = ?, status = 'SHOOT_COMPLETED', updated_at = CURRENT_TIMESTAMP
+            SET raw_video_url = ?, drive_link = ?, updated_at = CURRENT_TIMESTAMP
             WHERE id = ? AND pilot_id = ?
             ''',
             (data['drive_link'], data['drive_link'], booking_id, pilot_id),
         )
+        transition_booking(cursor, booking_id, current_status, 'SHOOT_COMPLETED')
         
         conn.commit()
         print(f"Booking {booking_id} footage uploaded by pilot {pilot_id}")
@@ -2971,45 +3081,7 @@ def complete_booking(current_user, booking_id):
 @app.route('/api/bookings/<int:booking_id>/payment', methods=['POST'])
 @token_required
 def process_payment(current_user, booking_id):
-    if current_user['role'] != 'client':
-        return jsonify({'message': 'Only clients can make payments'}), 403
-        
-    data = request.json
-    if not data.get('amount'):
-        return jsonify({'message': 'Payment amount is required'}), 400
-        
-    try:
-        conn = get_db()
-        cursor = conn.cursor()
-        
-        # Check if booking exists and belongs to this client
-        cursor.execute('''
-            SELECT * FROM bookings 
-            WHERE id = ? AND user_id = ? AND status = 'completed'
-        ''', (booking_id, current_user['id']))
-        booking = cursor.fetchone()
-        
-        if not booking:
-            return jsonify({'message': 'Booking not found or not completed'}), 404
-            
-        # Update booking with payment details
-        cursor.execute('''
-            UPDATE bookings 
-            SET payment_status = 'paid',
-                payment_amount = ?,
-                payment_date = CURRENT_TIMESTAMP,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE id = ? AND user_id = ?
-        ''', (data['amount'], booking_id, current_user['id']))
-        
-        conn.commit()
-        print(f"Payment processed for booking {booking_id} by client {current_user['id']}")
-        conn.close()
-        
-        return jsonify({'message': 'Payment processed successfully'})
-    except Exception as e:
-        print(f"Error processing payment: {str(e)}")
-        return jsonify({'message': 'Failed to process payment'}), 500
+    return jsonify({'message': 'Direct booking payment endpoint is deprecated. Use /api/payment/initiate.'}), 410
 
 @app.route('/api/bookings/<int:booking_id>/start', methods=['POST'])
 @token_required
@@ -3022,7 +3094,7 @@ def start_booking(current_user, booking_id):
         cursor = conn.cursor()
         
         # Check if booking exists and is assigned to this pilot
-        pilot_id = current_user.get('id', current_user.get('user_id'))
+        pilot_id = get_actor_id(current_user)
         cursor.execute('''
             SELECT * FROM bookings
             WHERE id = ? AND pilot_id = ?
@@ -3036,18 +3108,9 @@ def start_booking(current_user, booking_id):
         if current_status != 'PILOT_ASSIGNED':
             conn.close()
             return jsonify({'error': 'Invalid status transition'}), 400
-            
-        # Keep booking in PILOT_ASSIGNED for backward compatibility with old start call.
-        cursor.execute('''
-            UPDATE bookings 
-            SET status = 'PILOT_ASSIGNED',
-                updated_at = CURRENT_TIMESTAMP
-            WHERE id = ? AND pilot_id = ?
-        ''', (booking_id, pilot_id))
-        
-        conn.commit()
-        print(f"Booking {booking_id} started by pilot {pilot_id}")
+
         conn.close()
+        print(f"Booking {booking_id} started by pilot {pilot_id}")
         
         return jsonify({'message': 'Booking started successfully'})
     except Exception as e:
@@ -4812,6 +4875,10 @@ def manage_order(current_user, order_id):
             print("=== PUT Request Received ===")
             print("Raw JSON:", request.data)
             print("Parsed JSON:", data)
+
+            if data.get('status') is not None:
+                conn.close()
+                return jsonify({'message': 'Direct status updates are disabled. Use lifecycle endpoints.'}), 400
 
 
             update_fields = []

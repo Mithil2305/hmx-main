@@ -8,6 +8,10 @@ class BookingLifecycleError(Exception):
     pass
 
 
+class BookingValidationError(Exception):
+    pass
+
+
 def _load_json_list(raw):
     if not raw:
         return []
@@ -18,7 +22,14 @@ def _load_json_list(raw):
         return []
 
 
-def update_booking_status(cursor, booking_id, current_status, new_status):
+def get_actor_id(current_user):
+    if not current_user:
+        return None
+    return current_user.get("user_id") or current_user.get("id")
+
+
+def transition_booking(cursor, booking_id, current_status, new_status):
+    """Perform a guarded booking transition using the global state machine."""
     if not can_transition(current_status, new_status):
         raise BookingLifecycleError("Invalid status transition")
 
@@ -33,6 +44,10 @@ def update_booking_status(cursor, booking_id, current_status, new_status):
     )
 
 
+def update_booking_status(cursor, booking_id, current_status, new_status):
+    transition_booking(cursor, booking_id, current_status, new_status)
+
+
 def append_edited_version(cursor, booking, edited_url):
     versions = _load_json_list(booking.get("edited_versions"))
     version = len(versions) + 1
@@ -40,7 +55,7 @@ def append_edited_version(cursor, booking, edited_url):
         {
             "url": edited_url,
             "version": version,
-            "timestamp": datetime.utcnow().isoformat(),
+            "createdAt": datetime.utcnow().isoformat(),
         }
     )
     cursor.execute(
