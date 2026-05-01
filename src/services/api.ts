@@ -1,6 +1,6 @@
 import axios from "axios";
 
-const API_URL = "/api";
+const API_URL = "http://localhost:5001/api";
 
 // Create axios instance with base configuration
 const api = axios.create({
@@ -18,6 +18,9 @@ api.interceptors.request.use((config) => {
 	}
 	return config;
 });
+
+// Export api instance for direct use
+export { api };
 
 // Auth Services
 export const authService = {

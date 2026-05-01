@@ -73,18 +73,20 @@ app = Flask(__name__)
 def handle_preflight():
     if request.method == "OPTIONS":
         res = make_response()
-        res.headers.add("Access-Control-Allow-Origin", "http://localhost:5173")
-        res.headers.add("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-        res.headers.add("Access-Control-Allow-Headers", "Content-Type, Authorization")
-        res.headers.add("Access-Control-Allow-Credentials", "true")
+        origin = get_cors_origin()
+        res.headers["Access-Control-Allow-Origin"] = origin
+        res.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+        res.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+        res.headers["Access-Control-Allow-Credentials"] = "true"
         return res
 
 @app.after_request
 def add_cors_headers(response):
-    response.headers.add("Access-Control-Allow-Origin", "http://localhost:5173")
-    response.headers.add("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-    response.headers.add("Access-Control-Allow-Headers", "Content-Type, Authorization")
-    response.headers.add("Access-Control-Allow-Credentials", "true")
+    origin = get_cors_origin()
+    response.headers["Access-Control-Allow-Origin"] = origin
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+    response.headers["Access-Control-Allow-Credentials"] = "true"
     return response
 
 socketio = SocketIO(

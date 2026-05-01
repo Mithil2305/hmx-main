@@ -106,6 +106,7 @@ def init_business_booking_routes(app, get_db, send_email_async=None, generate_ra
             }), 500
 
     @business_bp.route('/api/business/bookings', methods=['POST'])
+    @business_bp.route('/api/bookings/business', methods=['POST'])
     def create_business_booking():
         conn = get_db()
         cursor = conn.cursor()
@@ -116,12 +117,44 @@ def init_business_booking_routes(app, get_db, send_email_async=None, generate_ra
             else:
                 data = request.form.to_dict()
             
+            # Normalize camelCase to snake_case for API compatibility
+            normalized_data = {}
+            field_mapping = {
+                'businessName': 'business_name',
+                'business_name': 'business_name',
+                'ownerName': 'owner_name',
+                'owner_name': 'owner_name',
+                'phone': 'phone',
+                'email': 'email',
+                'category': 'category',
+                'businessSize': 'business_size',
+                'business_size': 'business_size',
+                'numFloors': 'num_floors',
+                'num_floors': 'num_floors',
+                'address': 'address',
+                'preferredDates': 'preferred_date',
+                'preferredDate': 'preferred_date',
+                'preferred_date': 'preferred_date',
+                'platformPreference': 'platform_preference',
+                'platform_preference': 'platform_preference',
+                'timeSlot': 'time_slot',
+                'time_slot': 'time_slot',
+                'specialRequirements': 'special_requirements',
+                'special_requirements': 'special_requirements',
+            }
+            
+            for key, value in data.items():
+                normalized_key = field_mapping.get(key, key)
+                normalized_data[normalized_key] = value
+            
+            data = normalized_data
+            
             files = request.files
             
             # Basic validation
             required_fields = [
                 'business_name', 'owner_name', 'phone', 'email',
-                'category', 'area', 'address', 'preferred_date'
+                'category', 'address'
             ]
             
             for field in required_fields:
@@ -130,6 +163,19 @@ def init_business_booking_routes(app, get_db, send_email_async=None, generate_ra
                         'success': False,
                         'error': f'{field.replace("_", " ").title()} is required'
                     }), 400
+            
+            # For preferred_date, accept either single value or array (take first non-empty value)
+            preferred_date = data.get('preferred_date', '')
+            if isinstance(preferred_date, list):
+                preferred_date = next((d for d in preferred_date if d), '')
+            
+            if not preferred_date:
+                return jsonify({
+                    'success': False,
+                    'error': 'Preferred date is required'
+                }), 400
+            
+            data['preferred_date'] = preferred_date
             
             # Handle file uploads if any
             attachments = []
@@ -151,7 +197,7 @@ def init_business_booking_routes(app, get_db, send_email_async=None, generate_ra
                     })
             
             # Calculate cost
-            area = float(data.get('area', 0))
+            area = float(data.get('area', data.get('areaSqft', 0)))
             num_floors = int(data.get('num_floors', 1))
             business_size = data.get('business_size', 'medium')
             cost, error = calculate_business_cost(data['category'], area, num_floors, business_size)
@@ -213,8 +259,8 @@ def init_business_booking_routes(app, get_db, send_email_async=None, generate_ra
                 'sq_ft',
                 num_floors,
                 data['preferred_date'],
-                data.get('preferred_time', 'Morning'),
-                data.get('notes', ''),
+                data.get('time_slot', 'Morning'),
+                data.get('special_requirements', ''),
                 cost,
                 cost,
                 'REQUESTED',
@@ -224,10 +270,10 @@ def init_business_booking_routes(app, get_db, send_email_async=None, generate_ra
                 data['phone'],
                 'business',
                 business_size,
-                data.get('brand_name', ''),
-                data.get('owner_social_link', ''),
-                data.get('company_name', ''),
-                data.get('company_social_link', ''),
+                data.get('business_name', ''),  # maps to brand_name
+                '',  # owner_social_link not in form
+                '',  # company_name not in form
+                '',  # company_social_link not in form
                 floor_areas_json,
                 data.get('referral_id', ''),
                 datetime.utcnow().isoformat(),

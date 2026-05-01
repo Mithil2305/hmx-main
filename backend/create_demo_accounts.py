@@ -1,313 +1,322 @@
-from app import app, get_db, init_db
+from app import get_db, init_db
 from werkzeug.security import generate_password_hash
-from datetime import datetime
+from datetime import datetime, timedelta
+import json
 
-# Common password for all demo accounts
+
 DEMO_PASSWORD = "testing123"
 DEMO_PASSWORD_HASH = generate_password_hash(DEMO_PASSWORD)
 
 
-def create_pilot_account():
-    init_db()
+def pretty_table_label(table_name):
+    if table_name == "business_clients":
+        return "Business Client"
+    return table_name.rstrip("s").replace("_", " ").title()
+
+
+def now_iso():
+    return datetime.utcnow().isoformat(sep=" ", timespec="seconds")
+
+
+def table_columns(conn, table_name):
+    cursor = conn.cursor()
+    rows = cursor.execute(f"PRAGMA table_info({table_name})").fetchall()
+    return {row[1] for row in rows}
+
+
+def filter_payload(conn, table_name, payload):
+    columns = table_columns(conn, table_name)
+    return {key: value for key, value in payload.items() if key in columns}
+
+
+def upsert_by_email(table_name, email, payload):
     conn = get_db()
     cursor = conn.cursor()
 
-    pilot_data = {
-        'email': 'pilot@demo.com',
-        'name': 'John Pilot',
-        'full_name': 'John Michael Pilot',
-        'phone': '9876543210',
-        'password_hash': DEMO_PASSWORD_HASH,
-        'status': 'active',
-        'experience': 'Expert',
-        'equipment': 'DJI Air 3S'
-    }
+    filtered_payload = filter_payload(conn, table_name, payload)
+    existing = cursor.execute(
+        f"SELECT id FROM {table_name} WHERE email = ?",
+        (email,)
+    ).fetchone()
 
     try:
-        existing = cursor.execute(
-            'SELECT id FROM pilots WHERE email = ?',
-            (pilot_data['email'],)
-        ).fetchone()
-
         if existing:
-            print(f"✓ Pilot account already exists: {pilot_data['email']}")
-            return existing[0]
+            update_fields = [key for key in filtered_payload.keys() if key != "id"]
+            if update_fields:
+                cursor.execute(
+                    f"""
+                    UPDATE {table_name}
+                    SET {', '.join(f'{field} = ?' for field in update_fields)}
+                    WHERE id = ?
+                    """,
+                    [filtered_payload[field] for field in update_fields] + [existing[0]]
+                )
+            conn.commit()
+            print(f"✓ {pretty_table_label(table_name)} already exists: {email}")
+            return existing[0], conn
 
-        cursor.execute('''
-            INSERT INTO pilots (
-                name, full_name, email, phone, password_hash, status,
-                experience, equipment, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            pilot_data['name'],
-            pilot_data['full_name'],
-            pilot_data['email'],
-            pilot_data['phone'],
-            pilot_data['password_hash'],
-            pilot_data['status'],
-            pilot_data['experience'],
-            pilot_data['equipment'],
-            datetime.now()
-        ))
-
+        columns = list(filtered_payload.keys())
+        placeholders = ", ".join(["?"] * len(columns))
+        cursor.execute(
+            f"INSERT INTO {table_name} ({', '.join(columns)}) VALUES ({placeholders})",
+            [filtered_payload[column] for column in columns]
+        )
         conn.commit()
-        print("✅ Pilot account created")
-        return cursor.lastrowid
-
-    except Exception as e:
-        print(f"❌ Pilot error: {e}")
+        print(f"✅ {pretty_table_label(table_name)} created: {email}")
+        return cursor.lastrowid, conn
+    except Exception:
         conn.rollback()
-        return None
-    finally:
         conn.close()
+        raise
+
+
+def create_pilot_account():
+    pilot_data = {
+        "email": "pilot@demo.com",
+        "name": "John Pilot",
+        "full_name": "John Michael Pilot",
+        "phone": "9876543210",
+        "password_hash": DEMO_PASSWORD_HASH,
+        "status": "active",
+        "experience": "Expert",
+        "equipment": "DJI Air 3S",
+        "cities": "Mumbai,Pune",
+        "is_approved": 1,
+        "training_status": "completed"
+    }
+
+    pilot_id, conn = upsert_by_email("pilots", pilot_data["email"], pilot_data)
+    conn.close()
+    return pilot_id
 
 
 def create_referral_account():
-    init_db()
-    conn = get_db()
-    cursor = conn.cursor()
-
     referral_data = {
-        'email': 'referral@demo.com',
-        'name': 'Sarah Referral',
-        'phone': '9876543211',
-        'status': 'active',
-        'commission_rate': 10.00,
-        'referral_code': 'DEMO_REF_001',
-        'category': 'corporate',
-        'password_hash': DEMO_PASSWORD_HASH,
+        "email": "referral@demo.com",
+        "name": "Sarah Referral",
+        "phone": "9876543211",
+        "status": "active",
+        "commission_rate": 10.00,
+        "total_earnings": 1800.00,
+        "total_referrals": 1,
+        "referral_code": "DEMO_REF_001",
+        "category": "corporate",
+        "referral_source": "demo-seed",
+        "password_hash": DEMO_PASSWORD_HASH,
+        "created_at": now_iso(),
+        "updated_at": now_iso(),
     }
 
-    try:
-        existing = cursor.execute(
-            'SELECT id FROM referrals WHERE email = ?',
-            (referral_data['email'],)
-        ).fetchone()
-
-        if existing:
-            print(f"✓ Referral exists: {referral_data['email']}")
-            return existing[0]
-
-        cursor.execute('''
-            INSERT INTO referrals (
-                name, email, phone, password_hash, status, commission_rate,
-                referral_code, category, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            referral_data['name'],
-            referral_data['email'],
-            referral_data['phone'],
-            referral_data['password_hash'],
-            referral_data['status'],
-            referral_data['commission_rate'],
-            referral_data['referral_code'],
-            referral_data['category'],
-            datetime.now(),
-            datetime.now()
-        ))
-
-        conn.commit()
-        print("✅ Referral account created")
-        return cursor.lastrowid
-
-    except Exception as e:
-        print(f"❌ Referral error: {e}")
-        conn.rollback()
-        return None
-    finally:
-        conn.close()
+    referral_id, conn = upsert_by_email("referrals", referral_data["email"], referral_data)
+    conn.close()
+    return referral_id
 
 
 def create_editor_account():
-    init_db()
-    conn = get_db()
-    cursor = conn.cursor()
-
     editor_data = {
-        'email': 'editor@demo.com',
-        'name': 'Michael Editor',
-        'full_name': 'Michael James Editor',
-        'phone': '9876543212',
-        'password_hash': DEMO_PASSWORD_HASH,
-        'status': 'active',
-        'approval_status': 'approved',
-        'years_experience': 5,
-        'primary_skills': 'Video Editing, Color Grading, Motion Graphics',
-        'specialization': 'Real Estate Content',
-        'role': 'editor'
+        "email": "editor@demo.com",
+        "name": "Michael Editor",
+        "full_name": "Michael James Editor",
+        "phone": "9876543212",
+        "password_hash": DEMO_PASSWORD_HASH,
+        "status": "active",
+        "approval_status": "approved",
+        "years_experience": 5,
+        "primary_skills": "Video Editing, Color Grading, Motion Graphics",
+        "specialization": "Real Estate Content",
+        "role": "editor",
     }
 
-    try:
-        existing = cursor.execute(
-            'SELECT id FROM editors WHERE email = ?',
-            (editor_data['email'],)
-        ).fetchone()
-
-        if existing:
-            print(f"✓ Editor exists: {editor_data['email']}")
-            return existing[0]
-
-        cursor.execute('''
-            INSERT INTO editors (
-                name, full_name, email, phone, password_hash, status,
-                approval_status, years_experience, primary_skills,
-                specialization, role, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            editor_data['name'],
-            editor_data['full_name'],
-            editor_data['email'],
-            editor_data['phone'],
-            editor_data['password_hash'],
-            editor_data['status'],
-            editor_data['approval_status'],
-            editor_data['years_experience'],
-            editor_data['primary_skills'],
-            editor_data['specialization'],
-            editor_data['role'],
-            datetime.now()
-        ))
-
-        conn.commit()
-        print("✅ Editor account created")
-        return cursor.lastrowid
-
-    except Exception as e:
-        print(f"❌ Editor error: {e}")
-        conn.rollback()
-        return None
-    finally:
-        conn.close()
+    editor_id, conn = upsert_by_email("editors", editor_data["email"], editor_data)
+    conn.close()
+    return editor_id
 
 
 def create_guest_account():
-    init_db()
-    conn = get_db()
-    cursor = conn.cursor()
-
     guest_data = {
-        'email': 'guest@demo.com',
-        'username': 'Demo Guest',
-        'password_hash': DEMO_PASSWORD_HASH,
-        'role': 'guest'
+        "email": "guest@demo.com",
+        "username": "Demo Guest",
+        "password_hash": DEMO_PASSWORD_HASH,
+        "role": "guest",
+        "created_at": now_iso(),
+        "updated_at": now_iso(),
     }
 
-    try:
-        existing = cursor.execute(
-            'SELECT id FROM users WHERE email = ?',
-            (guest_data['email'],)
-        ).fetchone()
-
-        if existing:
-            print(f"✓ Guest exists: {guest_data['email']}")
-            return existing[0]
-
-        cursor.execute('''
-            INSERT INTO users (
-                username, email, password_hash, role, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?)
-        ''', (
-            guest_data['username'],
-            guest_data['email'],
-            guest_data['password_hash'],
-            guest_data['role'],
-            datetime.now(),
-            datetime.now()
-        ))
-
-        conn.commit()
-        print("✅ Guest account created")
-        return cursor.lastrowid
-
-    except Exception as e:
-        print(f"❌ Guest error: {e}")
-        conn.rollback()
-        return None
-    finally:
-        conn.close()
+    guest_id, conn = upsert_by_email("users", guest_data["email"], guest_data)
+    conn.close()
+    return guest_id
 
 
-def create_business_account():
-    init_db()
+def create_business_account(referral_id):
+    business_email = "business@demo.com"
+    business_profile = {
+        "email": business_email,
+        "username": "Demo Business",
+        "password_hash": DEMO_PASSWORD_HASH,
+        "role": "client",
+        "linked_referral_id": referral_id,
+        "bbd_form_submitted": 1,
+        "created_at": now_iso(),
+        "updated_at": now_iso(),
+    }
+
+    business_user_id, conn = upsert_by_email("users", business_email, business_profile)
+
+    business_client_profile = {
+        "business_name": "Demo Business Realty",
+        "registration_number": "REG-DEMO-001",
+        "organization_type": "Private Limited",
+        "incorporation_date": "2024-01-15",
+        "official_address": "Demo Business Park, Mumbai",
+        "official_email": business_email,
+        "phone": "9876543213",
+        "contact_name": "Demo Business",
+        "contact_person_designation": "Founder",
+        "email": business_email,
+        "password_hash": DEMO_PASSWORD_HASH,
+        "status": "active",
+        "approval_status": "approved",
+        "created_at": now_iso(),
+        "updated_at": now_iso(),
+    }
+
+    _, conn = upsert_by_email("business_clients", business_email, business_client_profile)
+    conn.close()
+    return business_user_id
+
+
+def create_linked_sample_booking(client_id, pilot_id, editor_id, referral_id):
+    booking_data = {
+        "user_id": client_id,
+        "pilot_id": pilot_id,
+        "editor_id": editor_id,
+        "referral_id": referral_id,
+        "location_address": "Demo Business Park, Mumbai",
+        "gps_link": "",
+        "property_type": "commercial",
+        "indoor_outdoor": "indoor",
+        "area_size": 4200.0,
+        "area_unit": "sq_ft",
+        "rooms_sections": 8,
+        "num_floors": 4,
+        "preferred_date": (datetime.utcnow() + timedelta(days=7)).strftime("%Y-%m-%d"),
+        "preferred_time": "Morning",
+        "special_requirements": "Seeded demo booking linked across client, referral, pilot and editor roles.",
+        "drone_permissions_required": 0,
+        "base_package_cost": 24000.0,
+        "total_cost": 36000.0,
+        "custom_quote": "",
+        "status": "EDITING",
+        "payment_status": "ESCROW",
+        "amount": 18000.0,
+        "payment_amount": 18000.0,
+        "payment_date": None,
+        "completed_date": None,
+        "created_at": now_iso(),
+        "updated_at": now_iso(),
+        "admin_comments": "Demo record for role-link testing.",
+        "description": "Linked seed booking",
+        "delivery_video_link": "",
+        "drive_link": "",
+        "raw_video_url": "",
+        "edited_versions": json.dumps([]),
+        "revision_history": json.dumps([]),
+        "auto_approve_at": (datetime.utcnow() + timedelta(days=3)).isoformat(sep=" ", timespec="seconds"),
+        "pilot_due_at": (datetime.utcnow() + timedelta(days=2)).isoformat(sep=" ", timespec="seconds"),
+        "editor_due_at": (datetime.utcnow() + timedelta(days=5)).isoformat(sep=" ", timespec="seconds"),
+        "pilot_earnings": 11700.0,
+        "editor_earnings": 1800.0,
+        "referral_earnings": 1800.0,
+        "hmx_earnings": 2700.0,
+        "gateway_fees": 900.0,
+        "booking_category": "business",
+        "business_size": "medium",
+        "brand_name": "Demo Business Realty",
+        "owner_social_link": "",
+        "company_name": "Demo Business Realty Pvt Ltd",
+        "company_social_link": "",
+        "floor_areas": json.dumps(["1200", "1100", "1000", "900"]),
+        "referral_code": "DEMO_REF_001",
+        "guest_name": "Demo Business",
+        "guest_email": "business@demo.com",
+        "guest_phone": "9876543213",
+        "guest_address": "Demo Business Park, Mumbai",
+    }
+
     conn = get_db()
     cursor = conn.cursor()
+    filtered_payload = filter_payload(conn, "bookings", booking_data)
 
-    business_data = {
-        'email': 'business@demo.com',
-        'username': 'Demo Business',
-        'password_hash': DEMO_PASSWORD_HASH,
-        'role': 'business'
-    }
+    existing = cursor.execute(
+        """
+        SELECT id FROM bookings
+        WHERE user_id = ? AND booking_category = ? AND location_address = ?
+        """,
+        (client_id, "business", "Demo Business Park, Mumbai")
+    ).fetchone()
 
     try:
-        existing = cursor.execute(
-            'SELECT id FROM users WHERE email = ?',
-            (business_data['email'],)
-        ).fetchone()
-
         if existing:
-            print(f"✓ Business exists: {business_data['email']}")
+            update_fields = [key for key in filtered_payload.keys() if key != "id"]
+            if update_fields:
+                cursor.execute(
+                    f"""
+                    UPDATE bookings
+                    SET {', '.join(f'{field} = ?' for field in update_fields)}
+                    WHERE id = ?
+                    """,
+                    [filtered_payload[field] for field in update_fields] + [existing[0]]
+                )
+            conn.commit()
+            print(f"✓ Linked demo booking already exists: {existing[0]}")
             return existing[0]
 
-        cursor.execute('''
-            INSERT INTO users (
-                username, email, password_hash, role, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?)
-        ''', (
-            business_data['username'],
-            business_data['email'],
-            business_data['password_hash'],
-            business_data['role'],
-            datetime.now(),
-            datetime.now()
-        ))
-
+        columns = list(filtered_payload.keys())
+        placeholders = ", ".join(["?"] * len(columns))
+        cursor.execute(
+            f"INSERT INTO bookings ({', '.join(columns)}) VALUES ({placeholders})",
+            [filtered_payload[column] for column in columns]
+        )
         conn.commit()
-        print("✅ Business account created")
-        return cursor.lastrowid
-
+        booking_id = cursor.lastrowid
+        print(f"✅ Linked demo booking created: {booking_id}")
+        return booking_id
     except Exception as e:
-        print(f"❌ Business error: {e}")
         conn.rollback()
+        print(f"❌ Booking error: {e}")
         return None
     finally:
         conn.close()
 
 
-def print_summary():
-    print("\n" + "=" * 50)
-    print("DEMO ACCOUNTS")
-    print("=" * 50)
-
-    accounts = [
-        ("Pilot", "pilot@demo.com"),
-        ("Referral", "referral@demo.com"),
-        ("Editor", "editor@demo.com"),
-        ("Guest", "guest@demo.com"),
-        ("Business", "business@demo.com"),
-    ]
-
-    for role, email in accounts:
-        print(f"{role}: {email} / {DEMO_PASSWORD}")
-
-    print("=" * 50)
+def print_summary(client_user_id, referral_id, pilot_id, editor_id, guest_id, booking_id):
+    print("\n" + "=" * 60)
+    print("DEMO DATA SEED")
+    print("=" * 60)
+    print(f"Pilot:    pilot@demo.com / {DEMO_PASSWORD} (id: {pilot_id})")
+    print(f"Editor:   editor@demo.com / {DEMO_PASSWORD} (id: {editor_id})")
+    print(f"Referral: referral@demo.com / {DEMO_PASSWORD} (id: {referral_id})")
+    print(f"Client:   business@demo.com / {DEMO_PASSWORD} (id: {client_user_id})")
+    print(f"Guest:    guest@demo.com / {DEMO_PASSWORD} (id: {guest_id})")
+    print(f"Booking:  linked business booking id {booking_id}")
+    print("=" * 60)
 
 
 def main():
-    print("🚀 Creating demo accounts...\n")
+    print("🚀 Seeding linked demo data...\n")
+    init_db()
 
-    results = [
-        create_pilot_account(),
-        create_referral_account(),
-        create_editor_account(),
-        create_guest_account(),
-        create_business_account()
-    ]
+    pilot_id = create_pilot_account()
+    referral_id = create_referral_account()
+    editor_id = create_editor_account()
+    guest_id = create_guest_account()
+    client_user_id = create_business_account(referral_id)
+    booking_id = create_linked_sample_booking(client_user_id, pilot_id, editor_id, referral_id)
 
-    if any(results):
-        print_summary()
+    if all([pilot_id, referral_id, editor_id, guest_id, client_user_id, booking_id]):
+        print_summary(client_user_id, referral_id, pilot_id, editor_id, guest_id, booking_id)
     else:
-        print("❌ No accounts created")
+        print("❌ Seeding completed with one or more failures")
 
 
 if __name__ == '__main__':
