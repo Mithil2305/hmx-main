@@ -7,6 +7,15 @@ import json
 DEMO_PASSWORD = "testing123"
 DEMO_PASSWORD_HASH = generate_password_hash(DEMO_PASSWORD)
 
+# Services used to simulate lifecycle and payments
+from services.booking_service import (
+    transition_booking,
+    append_edited_version,
+    set_auto_approval_deadline,
+)
+from services.payment_service import distribute_payment, PaymentDistributionError
+from services.booking_service import BookingLifecycleError
+
 
 def pretty_table_label(table_name):
     if table_name == "business_clients":
@@ -313,6 +322,13 @@ def main():
     client_user_id = create_business_account(referral_id)
     booking_id = create_linked_sample_booking(client_user_id, pilot_id, editor_id, referral_id)
 
+    # Simulate full workflow: pilot accepts, uploads, editor edits, client approves, distribute payment
+    if booking_id:
+        try:
+            simulate_workflow(booking_id, pilot_id, editor_id, client_user_id, referral_id)
+        except Exception as e:
+            print(f"❌ Workflow simulation failed: {e}")
+
     if all([pilot_id, referral_id, editor_id, guest_id, client_user_id, booking_id]):
         print_summary(client_user_id, referral_id, pilot_id, editor_id, guest_id, booking_id)
     else:
@@ -321,3 +337,97 @@ def main():
 
 if __name__ == '__main__':
     main()
+
+
+def simulate_workflow(booking_id, pilot_id, editor_id, client_user_id, referral_id):
+    """Simulate: pilot assigned -> shoot completed (raw uploaded) -> editing -> edit submitted -> client approve -> distribute payments"""
+    print("\n🔁 Simulating booking lifecycle...\n")
+    conn = get_db()
+    cursor = conn.cursor()
+
+    # Fetch booking
+    cursor.execute('SELECT * FROM bookings WHERE id = ?', (booking_id,))
+    booking = cursor.fetchone()
+    if not booking:
+        conn.close()
+        raise Exception("Booking not found for simulation")
+
+    # 1) Assign pilot (REQUESTED -> PILOT_ASSIGNED)
+    try:
+        cursor.execute('UPDATE bookings SET pilot_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', (pilot_id, booking_id))
+        transition_booking(cursor, booking_id, booking['status'], 'PILOT_ASSIGNED')
+        conn.commit()
+        print(f"➡️ Pilot assigned (id: {pilot_id}) -> booking {booking_id}")
+    except BookingLifecycleError as e:
+        conn.rollback()
+        print(f"⚠️ Could not assign pilot: {e}")
+
+    # Refresh booking
+    cursor.execute('SELECT * FROM bookings WHERE id = ?', (booking_id,))
+    booking = cursor.fetchone()
+
+    # 2) Pilot completes shoot and uploads raw video (PILOT_ASSIGNED -> SHOOT_COMPLETED -> EDITING)
+    raw_url = f"https://demo.example.com/raw/{booking_id}/raw_video.mp4"
+    try:
+        transition_booking(cursor, booking_id, booking['status'], 'SHOOT_COMPLETED')
+        cursor.execute('UPDATE bookings SET raw_video_url = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', (raw_url, booking_id))
+        # move to editing
+        transition_booking(cursor, booking_id, 'SHOOT_COMPLETED', 'EDITING')
+        conn.commit()
+        print(f"⬇️ Pilot uploaded raw video -> {raw_url}")
+    except BookingLifecycleError as e:
+        conn.rollback()
+        print(f"⚠️ Could not mark shoot completed: {e}")
+
+    # 3) Editor submits edited video (EDITING -> EDIT_SUBMITTED)
+    edited_url = f"https://demo.example.com/edited/{booking_id}/final_v1.mp4"
+    cursor.execute('SELECT * FROM bookings WHERE id = ?', (booking_id,))
+    booking = cursor.fetchone()
+    try:
+        append_edited_version(cursor, dict(booking), edited_url)
+        cursor.execute('UPDATE bookings SET delivery_video_link = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', (edited_url, booking_id))
+        transition_booking(cursor, booking_id, booking['status'], 'EDIT_SUBMITTED')
+        set_auto_approval_deadline(cursor, booking_id, days=3)
+        conn.commit()
+        print(f"✂️ Editor submitted edited video -> {edited_url}")
+    except BookingLifecycleError as e:
+        conn.rollback()
+        print(f"⚠️ Could not submit edit: {e}")
+
+    # 4) Client approves the edit (EDIT_SUBMITTED -> APPROVED -> COMPLETED) and distribute payment
+    cursor.execute('SELECT * FROM bookings WHERE id = ?', (booking_id,))
+    booking = cursor.fetchone()
+    try:
+        transition_booking(cursor, booking_id, booking['status'], 'APPROVED')
+
+        booking_payload = dict(booking)
+        booking_payload['status'] = 'APPROVED'
+        distribution = distribute_payment(booking_payload)
+
+        cursor.execute(
+            '''
+            UPDATE bookings
+            SET pilot_earnings = ?, editor_earnings = ?, hmx_earnings = ?, payment_split_status = ?, payment_status = ?, amount = COALESCE(amount, payment_amount, total_cost), updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            ''',
+            (
+                distribution['pilot_share'],
+                distribution['editor_share'],
+                distribution['platform_share'],
+                distribution['transfer_status'],
+                'RELEASED',
+                booking_id,
+            ),
+        )
+
+        transition_booking(cursor, booking_id, 'APPROVED', 'COMPLETED')
+        conn.commit()
+        print(f"✅ Client approved booking. Distribution: {distribution}")
+    except BookingLifecycleError as e:
+        conn.rollback()
+        print(f"⚠️ Approval transition failed: {e}")
+    except PaymentDistributionError as e:
+        conn.rollback()
+        print(f"⚠️ Payment distribution failed: {e}")
+    finally:
+        conn.close()

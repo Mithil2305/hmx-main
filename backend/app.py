@@ -89,10 +89,19 @@ def add_cors_headers(response):
     response.headers["Access-Control-Allow-Credentials"] = "true"
     return response
 
+# Prefer eventlet/gevent for websocket support; fall back to threading when unavailable
+try:
+    import eventlet  # type: ignore
+    _async_mode = 'eventlet'
+    print("Using eventlet for async websocket support")
+except Exception:
+    _async_mode = 'threading'
+    print("Eventlet not available; falling back to threading (websockets disabled)")
+
 socketio = SocketIO(
     app,
     cors_allowed_origins=['http://localhost:5173', 'http://localhost:5174', 'http://127.0.0.1:5173', 'http://127.0.0.1:5174'],
-    async_mode='threading'
+    async_mode=_async_mode
 )
 
 active_connections = {}
