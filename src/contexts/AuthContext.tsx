@@ -40,15 +40,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
 			if (response.ok) {
 				const userData = await response.json();
 				setUser(userData);
-				setIsAuthenticated(true);
-				setIsLoading(false);
 
 				// Only business/client users need BBD status checks.
 				if (userData?.role === "business" || userData?.role === "client") {
-					checkBBDStatus().then(setHasCompletedBBD);
+					const completed = await checkBBDStatus();
+					setHasCompletedBBD(completed);
 				} else {
 					setHasCompletedBBD(false);
 				}
+
+				setIsAuthenticated(true);
+				setIsLoading(false);
 
 				return true;
 			} else {

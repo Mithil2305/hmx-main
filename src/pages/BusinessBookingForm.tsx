@@ -182,27 +182,23 @@ const BusinessBookingForm: React.FC = () => {
 	};
 
 	const sendOtp = async () => {
-		if (!formData.phone) {
-			setError("Phone number is required");
-			setSuccessMessage("");
-			return;
-		}
-
-		// Validate phone number format (basic validation for Indian numbers)
-		const phoneRegex = /^[6-9]\d{9}$/;
-		if (!phoneRegex.test(formData.phone)) {
-			setError("Please enter a valid 10-digit phone number");
+		if (!formData.email) {
+			setError("Email is required to send OTP");
 			setSuccessMessage("");
 			return;
 		}
 
 		try {
-			await api.post("/auth/send-otp", {
-				phone: formData.phone,
-				type: "verification",
+			await api.post("/auth/request-otp", {
+				email: formData.email,
+				user_type: "client",
+				user_data: {
+					name: formData.ownerName || "Business Owner",
+					business_name: formData.businessName || "Business",
+				},
 			});
 			setFormData((prev) => ({ ...prev, showOtpField: true }));
-			setSuccessMessage("OTP sent successfully!");
+			setSuccessMessage("OTP sent successfully to your email!");
 			setError("");
 		} catch (err: any) {
 			setError(err.response?.data?.message || "Failed to send OTP");
@@ -348,7 +344,7 @@ const BusinessBookingForm: React.FC = () => {
 			// Handle custom quote submission
 			try {
 				setIsSubmitting(true);
-				const response = await api.post("/bookings/custom-quote", {
+				await api.post("/bookings/business", {
 					...formData,
 					status: "custom_quote_requested",
 				});
@@ -376,9 +372,26 @@ const BusinessBookingForm: React.FC = () => {
 					status: "payment_pending",
 				});
 
-				// Redirect to payment gateway
-				window.location.href = response.data.paymentUrl;
+				const bookingId = response.data.booking_id;
+				if (!bookingId) {
+					throw new Error("Booking created but booking id was not returned");
+				}
+
+				const paymentResponse = await api.post("/payment/initiate", {
+					booking_id: bookingId,
+					amount: cost / 2,
+					phone: formData.phone,
+					email: formData.email,
+				});
+
+				const paymentUrl =
+					paymentResponse.data.payment_url || paymentResponse.data.paymentUrl;
+				if (!paymentUrl) {
+					throw new Error("Payment gateway URL was not returned");
+				}
+
 				setIsPaymentPending(true);
+				window.location.href = paymentUrl;
 			} catch (err: any) {
 				setError(err.response?.data?.message || "Failed to process booking");
 			} finally {
