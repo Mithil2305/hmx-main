@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import axios from 'axios';
+import { otpService } from '../services/api';
+import { createRecord } from '../services/firestoreService';
 
 const GuestSignupPage: React.FC = () => {
   const navigate = useNavigate();
@@ -25,11 +26,7 @@ const GuestSignupPage: React.FC = () => {
     setLoading(true);
     setError('');
     try {
-      await axios.post('/api/auth/request-otp', {
-        email: form.email,
-        user_type: 'guest',
-        user_data: { name: form.name, phone: form.phone }
-      });
+      await otpService.requestOtp({ email: form.email });
       setOtpSent(true);
       setSuccess('OTP sent to your email');
     } catch (err: any) {
@@ -43,10 +40,12 @@ const GuestSignupPage: React.FC = () => {
     setLoading(true);
     setError('');
     try {
-      await axios.post('/api/auth/verify-otp', {
-        email: form.email,
-        otp: form.otp
-      });
+      const result = await otpService.verifyOtp({ email: form.email, otp: form.otp });
+      if (!result.success) {
+        setError(result.error || 'Failed to verify OTP');
+        setLoading(false);
+        return;
+      }
       setForm(f => ({ ...f, emailVerified: true }));
       setSuccess('Email verified!');
       setStep(2);
@@ -64,9 +63,19 @@ const GuestSignupPage: React.FC = () => {
 
   // Step 3: Order booking (reuse client dashboard logic)
   const handleProceedToOrder = () => {
-    // Save guest info to localStorage/session and redirect to booking page
-    localStorage.setItem('guestInfo', JSON.stringify(form));
-    navigate('/guest-booking');
+    const guestProfile = {
+      name: form.name,
+      email: form.email,
+      phone: form.phone,
+      address: form.address,
+      referral_link: form.referral_link,
+      referral_code: form.referral_code,
+      role: 'guest'
+    };
+    createRecord('guests', guestProfile).finally(() => {
+      localStorage.setItem('guestInfo', JSON.stringify(guestProfile));
+      navigate('/guest-booking');
+    });
   };
 
   return (

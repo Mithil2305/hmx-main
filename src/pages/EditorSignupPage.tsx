@@ -1,8 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { User, Mail, Phone, Lock, Video, Clock, FileText, Globe } from 'lucide-react';
-import { editorService } from '../services/api';
-import axios from 'axios';
+import { editorService, otpService } from '../services/api';
 
 interface FormData {
   fullName: string;
@@ -160,7 +159,7 @@ const EditorSignupPage: React.FC = () => {
         tax_gst_number: formData.taxGstNumber,
         password: formData.password
       };
-
+      await editorService.register(applicationData);
       setSuccess('Application submitted successfully! Redirecting to login...');
       setTimeout(() => {
         navigate('/login', { replace: true });
@@ -218,12 +217,8 @@ const EditorSignupPage: React.FC = () => {
   }
   const requestOtp = async () => {
     try {
-      const res = await axios.post('/api/auth/request-otp', {
-        email: formData.email,
-        user_type: 'editor',
-        user_data: formData
-      });
-      if (res.data.success) {
+      const res = await otpService.requestOtp({ email: formData.email });
+      if (res.success) {
         setOtpSent(true);
         setOtpError('');
         alert('OTP sent to your email!');
@@ -235,11 +230,8 @@ const EditorSignupPage: React.FC = () => {
 
   const verifyOtp = async () => {
     try {
-      const res = await axios.post('/api/auth/verify-otp', {
-        email: formData.email,
-        otp: otp
-      });
-      if (res.data.success) {
+      const res = await otpService.verifyOtp({ email: formData.email, otp });
+      if (res.success) {
         setOtpVerified(true);
         setOtpError('');
         alert('OTP Verified! You can continue.');

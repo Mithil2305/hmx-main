@@ -1,9 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { User, Mail, Phone, Lock, Calendar, MapPin, FileText, Camera, Shield } from 'lucide-react';
-import { pilotService } from '../services/api';
+import { pilotService, otpService } from '../services/api';
 import { CITY_LIST as LOCAL_CITIES } from '../data/cities';
-import axios from 'axios';
 interface FormData {
   // Personal Details
   fullName: string;
@@ -110,6 +109,7 @@ const PilotSignupPage: React.FC = () => {
   const [otpSent, setOtpSent] = useState(false);
   const [otpVerified, setOtpVerified] = useState(false);
   const [otpError, setOtpError] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
 
   const genderOptions = ['Male', 'Female', 'Other', 'Prefer not to say'];
@@ -331,34 +331,29 @@ const PilotSignupPage: React.FC = () => {
   };
   const requestOtp = async () => {
     try {
-      const res = await axios.post('/api/auth/request-otp', {
-        email: formData.email,
-        user_type: 'editor',
-        user_data: formData
-      });
-      if (res.data.success) {
+      const res = await otpService.requestOtp({ email: formData.email });
+      if (res.success) {
         setOtpSent(true);
         setOtpError('');
         alert('OTP sent to your email!');
       }
-    } catch (err: any) {
-      setOtpError(err.response?.data?.error || 'Failed to send OTP');
+    } catch (err: unknown) {
+      const error = err as { response?: { data?: { error?: string } } };
+      setOtpError(error.response?.data?.error || 'Failed to send OTP');
     }
   };
 
   const verifyOtp = async () => {
     try {
-      const res = await axios.post('/api/auth/verify-otp', {
-        email: formData.email,
-        otp: otp
-      });
-      if (res.data.success) {
+      const res = await otpService.verifyOtp({ email: formData.email, otp });
+      if (res.success) {
         setOtpVerified(true);
         setOtpError('');
         alert('OTP Verified! You can continue.');
       }
-    } catch (err: any) {
-      setOtpError(err.response?.data?.error || 'Invalid OTP');
+    } catch (err: unknown) {
+      const error = err as { response?: { data?: { error?: string } } };
+      setOtpError(error.response?.data?.error || 'Invalid OTP');
     }
   };
 
@@ -366,52 +361,59 @@ const PilotSignupPage: React.FC = () => {
   const handleSubmit = async () => {
     if (!validateStep5()) return;
 
+    setIsSubmitting(true);
+
     try {
       const applicationData = {
-        name: formData.fullName,
-        full_name: formData.fullName,
+        fullName: formData.fullName,
         email: formData.email,
         phone: formData.phone,
         password: formData.password,
-        date_of_birth: formData.dateOfBirth,
+        dateOfBirth: formData.dateOfBirth,
         gender: formData.gender,
         address: formData.address,
-        government_id_proof: formData.governmentIdProof,
-        license_number: formData.licenseNumber,
-        issuing_authority: formData.issuingAuthority,
-        license_issue_date: formData.licenseIssueDate,
-        license_expiry_date: formData.licenseExpiryDate,
-        drone_model: formData.droneModel,
-        drone_serial: formData.droneSerial,
-        drone_uin: formData.droneUin,
-        drone_category: formData.droneCategory,
-        total_flying_hours: formData.totalFlyingHours,
-        flight_records: formData.flightRecords,
-        insurance_policy: formData.insurancePolicy,
-        insurance_validity: formData.insuranceValidity,
-        pilot_license_url: formData.pilotLicenseUrl,
-        id_proof_url: formData.idProofUrl,
-        training_certificate_url: formData.trainingCertificateUrl,
-        photograph_url: formData.photographUrl,
-        insurance_certificate_url: formData.insuranceCertificateUrl,
-        cities: formData.cities.join(', '),
+        governmentIdProof: formData.governmentIdProof,
+        licenseNumber: formData.licenseNumber,
+        issuingAuthority: formData.issuingAuthority,
+        licenseIssueDate: formData.licenseIssueDate,
+        licenseExpiryDate: formData.licenseExpiryDate,
+        droneModel: formData.droneModel,
+        droneSerial: formData.droneSerial,
+        droneUin: formData.droneUin,
+        droneCategory: formData.droneCategory,
+        totalFlyingHours: formData.totalFlyingHours,
+        flightRecords: formData.flightRecords,
+        insurancePolicy: formData.insurancePolicy,
+        insuranceValidity: formData.insuranceValidity,
+        pilotLicenseUrl: formData.pilotLicenseUrl,
+        idProofUrl: formData.idProofUrl,
+        trainingCertificateUrl: formData.trainingCertificateUrl,
+        photographUrl: formData.photographUrl,
+        insuranceCertificateUrl: formData.insuranceCertificateUrl,
+        cities: formData.cities,
         experience: formData.experience,
         equipment: formData.equipment,
-        portfolio_url: formData.portfolio,
-        bank_account: formData.bankAccount
+        portfolio: formData.portfolio,
+        bankAccount: formData.bankAccount
       };
 
-      setSuccess('Application submitted successfully! Redirecting to login...');
+      // Actually call the API
+      const response = await pilotService.register(applicationData);
+
+      setSuccess('Application submitted successfully! Redirecting...');
       setTimeout(() => {
         navigate('/login', { replace: true });
       }, 2000);
 
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Error registering pilot:', err);
+      const error = err as { response?: { data?: { error?: string; message?: string } } };
       setErrors({
         ...errors,
-        submit: err.response?.data?.message || 'Failed to submit application. Please try again.'
+        submit: error.response?.data?.error || error.response?.data?.message || 'Failed to submit application. Please try again.'
       });
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -1102,9 +1104,10 @@ const PilotSignupPage: React.FC = () => {
                 <button
                   type="button"
                   onClick={handleNextStep}
-                  className="px-6 py-2 bg-primary-600 text-white rounded-lg font-medium hover:bg-primary-700 focus:ring-2 focus:ring-primary-500"
+                  disabled={isSubmitting}
+                  className={`px-6 py-2 bg-primary-600 text-white rounded-lg font-medium hover:bg-primary-700 focus:ring-2 focus:ring-primary-500 ${isSubmitting ? 'opacity-50 cursor-not-allowed' : ''}`}
                 >
-                  {step === 5 ? 'Submit Application' : 'Next'}
+                  {isSubmitting ? 'Submitting...' : (step === 5 ? 'Submit Application' : 'Next')}
                 </button>
               </div>
             </form>

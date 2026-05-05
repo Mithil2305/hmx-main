@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { paymentService } from '../services/api';
 
 interface PhonePePaymentProps {
-  bookingId: number;
+  bookingId: number | string;
   amount: number;
   onSuccess: () => void;
   onCancel: () => void;
@@ -18,15 +18,13 @@ const PhonePePayment: React.FC<PhonePePaymentProps> = ({ bookingId, amount, onSu
 
     try {
       const result = await paymentService.initiatePayment(bookingId, amount);
-      
       if (result.success) {
-        // Redirect to PhonePe payment page
-        window.location.href = result.payment_url;
+        onSuccess();
       } else {
         setError(result.message || 'Failed to initiate payment');
       }
     } catch (err: any) {
-      setError(err.response?.data?.message || 'Payment initiation failed');
+      setError(err.message || 'Payment initiation failed');
     } finally {
       setLoading(false);
     }

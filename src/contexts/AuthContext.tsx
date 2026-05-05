@@ -1,5 +1,8 @@
 import React, { createContext, useContext, useState, useEffect } from "react";
+import { onAuthStateChanged } from "firebase/auth";
 import { authService } from "../services/api";
+import { auth } from "../services/firebase";
+import { getUserProfile, updateRecord } from "../services/firestoreService";
 
 interface AuthContextType {
 	isAuthenticated: boolean;
@@ -24,47 +27,28 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
 	const [hasCompletedBBD, setHasCompletedBBD] = useState<boolean>(false);
 
 	const verifyToken = async (): Promise<boolean> => {
-		const token = localStorage.getItem("token");
-		if (!token) {
+		const currentUser = auth.currentUser;
+		if (!currentUser) {
 			setIsLoading(false);
 			return false;
 		}
 
 		try {
-			const response = await fetch("/api/auth/verify", {
-				headers: {
-					Authorization: `Bearer ${token}`,
-				},
-			});
-
-			if (response.ok) {
-				const userData = await response.json();
-				setUser(userData);
-
-				// Only business/client users need BBD status checks.
-				if (userData?.role === "business" || userData?.role === "client") {
-					const completed = await checkBBDStatus();
-					setHasCompletedBBD(completed);
-				} else {
-					setHasCompletedBBD(false);
-				}
-
-				setIsAuthenticated(true);
-				setIsLoading(false);
-
-				return true;
-			} else {
-				// Token is invalid, clear it
-				localStorage.removeItem("token");
+			const userData = await getUserProfile(currentUser.uid);
+			if (!userData) {
 				setUser(null);
 				setIsAuthenticated(false);
 				setHasCompletedBBD(false);
 				setIsLoading(false);
 				return false;
 			}
+			setUser({ ...userData, uid: currentUser.uid });
+			setHasCompletedBBD(Boolean(userData.hasCompletedBBD));
+			setIsAuthenticated(true);
+			setIsLoading(false);
+			return true;
 		} catch (error) {
-			console.error("Token verification failed:", error);
-			localStorage.removeItem("token");
+			console.error("Auth verification failed:", error);
 			setUser(null);
 			setIsAuthenticated(false);
 			setHasCompletedBBD(false);
@@ -73,52 +57,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
 		}
 	};
 
-	const checkBBDStatus = async (): Promise<boolean> => {
-		try {
-			const response = await fetch("/api/business/booking-status", {
-				headers: {
-					Authorization: `Bearer ${localStorage.getItem("token")}`,
-				},
-			});
-
-			if (response.ok) {
-				const data = await response.json();
-				return data.hasCompletedBBD || false;
-			}
-			return false;
-		} catch (error) {
-			console.error("Error checking BBD status:", error);
-			return false;
-		}
-	};
-
-	const updateBBDStatus = async (completed: boolean): Promise<void> => {
-		try {
-			await fetch("/api/business/update-bbd-status", {
-				method: "POST",
-				headers: {
-					"Content-Type": "application/json",
-					Authorization: `Bearer ${localStorage.getItem("token")}`,
-				},
-				body: JSON.stringify({ hasCompletedBBD: completed }),
-			});
-			setHasCompletedBBD(completed);
-		} catch (error) {
-			console.error("Error updating BBD status:", error);
-			throw error;
-		}
-	};
-
 	const login = async (email: string, password: string) => {
 		setIsLoading(true);
 		try {
 			const response = await authService.login({ email, password });
-			if (response.token) {
-				localStorage.setItem("token", response.token);
-			}
-			// verifyToken sets user, isAuthenticated, and isLoading(false) internally
-			const verified = await verifyToken();
-			setIsAuthenticated(verified);
+			setUser(response.user || null);
+			setIsAuthenticated(true);
+			setHasCompletedBBD(Boolean(response.user?.hasCompletedBBD));
+			setIsLoading(false);
 		} catch (error) {
 			setIsAuthenticated(false);
 			setUser(null);
@@ -131,9 +77,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
 		setIsLoading(true);
 		try {
 			await authService.register(data);
-			// verifyToken sets user, isAuthenticated, and isLoading(false) internally
-			const verified = await verifyToken();
-			setIsAuthenticated(verified);
+			await verifyToken();
 		} catch (error) {
 			console.error("Registration failed:", error);
 			setIsLoading(false);
@@ -148,19 +92,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
 		setHasCompletedBBD(false);
 	};
 
-	// Verify token on initial app load
 	useEffect(() => {
-		verifyToken();
+		const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
+			if (!currentUser) {
+				setUser(null);
+				setIsAuthenticated(false);
+				setHasCompletedBBD(false);
+				setIsLoading(false);
+				return;
+			}
+			const profile = await getUserProfile(currentUser.uid);
+			setUser(profile ? { ...profile, uid: currentUser.uid } : null);
+			setIsAuthenticated(Boolean(profile));
+			setHasCompletedBBD(Boolean(profile?.hasCompletedBBD));
+			setIsLoading(false);
+		});
+		return () => unsubscribe();
 	}, []);
-
-	// Check if user has completed BBD form on initial load
-	useEffect(() => {
-		if (user?.id) {
-			const bbdCompleted =
-				localStorage.getItem(`bbd_completed_${user.id}`) === "true";
-			setHasCompletedBBD(bbdCompleted);
-		}
-	}, [user]);
 
 	return (
 		<AuthContext.Provider
@@ -175,8 +123,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
 				hasCompletedBBD,
 				setHasCompletedBBD: (completed: boolean) => {
 					setHasCompletedBBD(completed);
-					if (user?.id) {
-						localStorage.setItem(`bbd_completed_${user.id}`, String(completed));
+					if (user?.uid) {
+						updateRecord("users", user.uid, {
+							hasCompletedBBD: completed,
+						});
 					}
 				},
 			}}

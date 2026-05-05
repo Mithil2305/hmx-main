@@ -2,8 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { CheckCircle } from 'lucide-react';
-import { referralService } from '../services/api';
-import axios from 'axios';
+import { referralService, otpService } from '../services/api';
 
 interface FormData {
   name: string;
@@ -175,12 +174,8 @@ const ReferralSignupPage: React.FC = () => {
   ];
   const requestOtp = async () => {
     try {
-      const res = await axios.post('/api/auth/request-otp', {
-        email: formData.email,
-        user_type: 'editor',
-        user_data: formData
-      });
-      if (res.data.success) {
+      const res = await otpService.requestOtp({ email: formData.email });
+      if (res.success) {
         setOtpSent(true);
         setOtpError('');
         alert('OTP sent to your email!');
@@ -192,11 +187,8 @@ const ReferralSignupPage: React.FC = () => {
 
   const verifyOtp = async () => {
     try {
-      const res = await axios.post('/api/auth/verify-otp', {
-        email: formData.email,
-        otp: otp
-      });
-      if (res.data.success) {
+      const res = await otpService.verifyOtp({ email: formData.email, otp });
+      if (res.success) {
         setOtpVerified(true);
         setOtpError('');
         alert('OTP Verified! You can continue.');

@@ -8,10 +8,12 @@
     "build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "backend": "python3 backend/app.py"
+    "backend": "python3 backend/app.py",
+    "backend:firebase": "cd backend && python firebase_app.py"
   },
   "dependencies": {
     "axios": "^1.6.7",
+    "firebase": "^10.12.5",
     "framer-motion": "^10.18.0",
     "lucide-react": "^0.344.0",
     "react": "^18.3.1",

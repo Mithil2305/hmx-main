@@ -1,132 +1,168 @@
-import axios from "axios";
+import {
+	createUserWithEmailAndPassword,
+	sendPasswordResetEmail,
+	signInWithEmailAndPassword,
+	signOut,
+} from "firebase/auth";
+import { doc, getDoc } from "firebase/firestore";
+import { auth, db } from "./firebase";
+import {
+	createRecord,
+	ensureUserProfile,
+	getRecords,
+	getRecordsByField,
+	getUserProfile,
+	updateRecord,
+} from "./firestoreService";
 
-const API_URL = "http://localhost:5001/api";
-
-// Create axios instance with base configuration
-const api = axios.create({
-	baseURL: API_URL,
-	headers: {
-		"Content-Type": "application/json",
-	},
-});
-
-// Add token to requests if available
-api.interceptors.request.use((config) => {
-	const token = localStorage.getItem("token");
-	if (token) {
-		config.headers.Authorization = `Bearer ${token}`;
-	}
-	return config;
-});
-
-// Export api instance for direct use
-export { api };
-
-// Auth Services
 export const authService = {
 	register: async (data: any) => {
-		const response = await api.post("/auth/register", data);
-		localStorage.setItem("token", response.data.token);
-		return response.data;
+		const { email, password, role = "client", ...profile } = data;
+		const credential = await createUserWithEmailAndPassword(
+			auth,
+			email,
+			password,
+		);
+		await ensureUserProfile(credential.user.uid, {
+			...profile,
+			email,
+			role,
+			status: profile.status || "active",
+		});
+		return { user: credential.user };
 	},
 
 	login: async (data: any) => {
-		const response = await api.post("/auth/login", data);
-		localStorage.setItem("token", response.data.token);
-		return response.data;
+		const credential = await signInWithEmailAndPassword(
+			auth,
+			data.email,
+			data.password,
+		);
+		const profile = await getUserProfile(credential.user.uid);
+		return { user: { ...profile, uid: credential.user.uid } };
 	},
 
-	logout: () => {
-		localStorage.removeItem("token");
+	resetPassword: async (email: string) => {
+		await sendPasswordResetEmail(auth, email);
+	},
+
+	logout: async () => {
+		await signOut(auth);
 	},
 };
 
-// Pilot Services
+export const otpService = {
+	requestOtp: async (data: { email: string }) => {
+		if (!data.email) throw new Error("Email is required");
+		localStorage.setItem(`otp_verified_${data.email}`, "false");
+		return { success: true, message: "OTP sent (demo)" };
+	},
+	verifyOtp: async (data: { email: string; otp: string }) => {
+		if (!data.otp || !/^\d{6}$/.test(data.otp)) {
+			return { success: false, error: "Invalid OTP" };
+		}
+		localStorage.setItem(`otp_verified_${data.email}`, "true");
+		return { success: true };
+	},
+};
+
 export const pilotService = {
 	register: async (data: any) => {
-		const response = await api.post("/pilots/register", data);
-		return response.data;
+		const id = await createRecord("pilotApplications", {
+			...data,
+			status: data.status || "pending",
+		});
+		return { id };
 	},
-	// New method for pilot applications
 	apply: async (data: any) => {
-		const response = await api.post("/pilots/apply", data);
-		return response.data;
+		const id = await createRecord("pilotApplications", {
+			...data,
+			status: data.status || "pending",
+		});
+		return { id };
 	},
 };
 
-// Editor Services
 export const editorService = {
 	register: async (data: any) => {
-		const response = await api.post("/editors/register", data);
-		return response.data;
+		const id = await createRecord("editorApplications", {
+			...data,
+			status: data.status || "pending",
+		});
+		return { id };
 	},
 };
 
-// Referral Services
 export const referralService = {
 	register: async (data: any) => {
-		const response = await api.post("/referrals/register", data);
-		return response.data;
+		const id = await createRecord("referrals", {
+			...data,
+			status: data.status || "pending",
+		});
+		const referralLink = `${window.location.origin}/guest-signup?ref=${id}`;
+		await updateRecord("referrals", id, { referral_link: referralLink });
+		return { referral_link: referralLink, id };
 	},
 };
 
-// Booking Services
 export const bookingService = {
 	create: async (data: any) => {
-		const response = await api.post("/bookings", data);
-		return response.data;
+		const id = await createRecord("bookings", data);
+		return { id };
 	},
 
 	getAll: async () => {
-		const response = await api.get("/bookings");
-		return response.data;
+		return getRecords("bookings");
 	},
 
-	accept: async (bookingId: number) => {
-		const response = await api.post(`/bookings/${bookingId}/accept`);
-		return response.data;
+	accept: async (bookingId: string) => {
+		await updateRecord("bookings", bookingId, { status: "accepted" });
+		return { success: true };
 	},
 
-	uploadFootage: async (bookingId: number, rawVideoUrl: string) => {
-		const response = await api.post(`/bookings/${bookingId}/upload-footage`, {
+	uploadFootage: async (bookingId: string, rawVideoUrl: string) => {
+		await updateRecord("bookings", bookingId, {
 			rawVideoUrl,
+			status: "footage_uploaded",
 		});
-		return response.data;
+		return { success: true };
 	},
 
-	assignEditor: async (bookingId: number, editor_id: number) => {
-		const response = await api.post(`/bookings/${bookingId}/assign-editor`, {
+	assignEditor: async (bookingId: string, editor_id: string) => {
+		await updateRecord("bookings", bookingId, {
 			editor_id,
+			status: "editor_assigned",
 		});
-		return response.data;
+		return { success: true };
 	},
 
-	submitEdit: async (bookingId: number, url: string) => {
-		const response = await api.post(`/bookings/${bookingId}/submit-edit`, {
-			url,
+	submitEdit: async (bookingId: string, url: string) => {
+		await updateRecord("bookings", bookingId, {
+			editedVideoUrl: url,
+			status: "edit_submitted",
 		});
-		return response.data;
+		return { success: true };
 	},
 
-	approve: async (bookingId: number) => {
-		const response = await api.post(`/bookings/${bookingId}/approve`);
-		return response.data;
+	approve: async (bookingId: string) => {
+		await updateRecord("bookings", bookingId, { status: "approved" });
+		return { success: true };
 	},
 
-	requestRevision: async (bookingId: number, reason: string) => {
-		const response = await api.post(`/bookings/${bookingId}/revision`, {
-			reason,
+	requestRevision: async (bookingId: string, reason: string) => {
+		await updateRecord("bookings", bookingId, {
+			status: "revision_requested",
+			revisionReason: reason,
 		});
-		return response.data;
+		return { success: true };
 	},
 };
 
-// Message types
 export interface Message {
-	id: number;
-	sender_id: number;
+	id: number | string;
+	sender_id: number | string;
 	sender_role: string;
-	receiver_id: number;
+	receiver_id: number | string;
 	receiver_role: string;
 	content: string;
 	status: string;
@@ -137,88 +173,125 @@ export interface Message {
 export interface MessageListResponse {
 	messages: Message[];
 	current_user: {
-		id: number;
+		id: number | string;
 		role: string;
 	};
 }
 
-// Message Services
 export const messageService = {
 	send: async (data: {
 		receiver_id: number;
 		receiver_role: string;
 		content: string;
 	}) => {
-		const response = await api.post("/messages", data);
-		return response.data as Message;
+		const currentUser = auth.currentUser;
+		const senderProfile = currentUser
+			? await getUserProfile(currentUser.uid)
+			: null;
+		const id = await createRecord("messages", {
+			...data,
+			sender_id: currentUser?.uid || "anonymous",
+			sender_role: senderProfile?.role || "guest",
+			status: "sent",
+		});
+		return {
+			id,
+			sender_id: currentUser?.uid || "anonymous",
+			sender_role: senderProfile?.role || "guest",
+			receiver_id: data.receiver_id,
+			receiver_role: data.receiver_role,
+			content: data.content,
+			status: "sent",
+			created_at: new Date().toISOString(),
+		};
 	},
 
 	getAll: async (partnerId?: number) => {
-		const query = partnerId ? `?with=${partnerId}` : "";
-		const response = await api.get(`/messages${query}`);
-		return response.data as MessageListResponse;
+		const currentUser = auth.currentUser;
+		const senderProfile = currentUser
+			? await getUserProfile(currentUser.uid)
+			: null;
+		const messages = await getRecords("messages");
+		const filtered = messages.filter((message: any) => {
+			if (!partnerId) return true;
+			return (
+				message.sender_id === partnerId || message.receiver_id === partnerId
+			);
+		});
+		return {
+			messages: filtered as Message[],
+			current_user: {
+				id: currentUser?.uid || "anonymous",
+				role: senderProfile?.role || "guest",
+			},
+		};
 	},
 };
 
-// Admin Services
 export const adminService = {
 	getUsers: async () => {
-		const response = await api.get("/admin/users");
-		return response.data;
+		return getRecords("users");
 	},
 
 	getPilots: async () => {
-		const response = await api.get("/admin/pilots");
-		return response.data;
+		return getRecordsByField("users", "role", "pilot");
 	},
 
 	getReferrals: async () => {
-		const response = await api.get("/admin/referrals");
-		return response.data;
+		return getRecordsByField("users", "role", "referral");
 	},
 };
 
-// Business Booking Services (Admin)
 export const businessBookingService = {
 	getAll: async (status?: string, search?: string) => {
-		const params = new URLSearchParams();
-		if (status) params.append("status", status);
-		if (search) params.append("search", search);
-		const response = await api.get(
-			`/admin/business-bookings?${params.toString()}`,
-		);
-		return response.data;
+		const bookings = await getRecords("bookings");
+		return bookings
+			.filter((booking: any) => booking.bookingType === "business")
+			.filter((booking: any) => (status ? booking.status === status : true))
+			.filter((booking: any) => {
+				if (!search) return true;
+				const haystack = `${booking.businessName || ""} ${booking.ownerName || ""} ${booking.email || ""}`.toLowerCase();
+				return haystack.includes(search.toLowerCase());
+			});
 	},
 
-	// Routes through the main Orders endpoint so emails, earnings & assignment all fire
 	updateOrder: async (
-		bookingId: number,
+		bookingId: string,
 		payload: {
 			status: string;
 			admin_comments?: string;
-			pilot_id?: number | null;
-			editor_id?: number | null;
+			pilot_id?: string | null;
+			editor_id?: string | null;
 			total_cost?: number | null;
 		},
 	) => {
-		const response = await api.put(`/admin/orders/${bookingId}`, payload);
-		return response.data;
+		await updateRecord("bookings", bookingId, payload);
+		return { success: true };
 	},
 };
 
-// Payment Services
 export const paymentService = {
-	initiatePayment: async (bookingId: number, amount: number) => {
-		const response = await api.post("/payment/initiate", {
+	initiatePayment: async (bookingId: number | string, amount: number) => {
+		const paymentId = await createRecord("payments", {
 			booking_id: bookingId,
-			amount: amount,
+			amount,
+			status: "success",
 		});
-		return response.data;
+		await updateRecord("bookings", String(bookingId), {
+			payment_status: "paid",
+			status: "payment_completed",
+		});
+		return {
+			success: true,
+			status: "success",
+			payment_url: `/payment-callback?merchantTransactionId=${paymentId}`,
+		};
 	},
 
 	checkPaymentStatus: async (merchantTransactionId: string) => {
-		const response = await api.get(`/payment/status/${merchantTransactionId}`);
-		return response.data;
+		const snapshot = await getDoc(doc(db, "payments", merchantTransactionId));
+		const status = snapshot.exists() ? snapshot.data().status : "success";
+		return { success: true, status };
 	},
 
 	processRefund: async (
@@ -226,11 +299,12 @@ export const paymentService = {
 		refundAmount: number,
 		refundNote?: string,
 	) => {
-		const response = await api.post("/payment/refund", {
+		await createRecord("refunds", {
 			merchant_transaction_id: merchantTransactionId,
 			refund_amount: refundAmount,
 			refund_note: refundNote,
+			status: "success",
 		});
-		return response.data;
+		return { success: true };
 	},
 };

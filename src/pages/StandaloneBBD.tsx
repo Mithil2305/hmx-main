@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import axios from 'axios';
+import { bookingService, otpService, paymentService } from '../services/api';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 
@@ -92,11 +92,7 @@ const StandaloneBBD: React.FC = () => {
     try {
       setSuccessMessage('Sending OTP...');
       setError('');
-      await axios.post('/api/auth/request-otp', {
-        email: formData.email,
-        user_type: 'client',
-        user_data: { name: formData.ownerName || 'Business Owner', business_name: formData.brandName }
-      });
+      await otpService.requestOtp({ email: formData.email });
       setSuccessMessage('OTP sent successfully to your email!');
       setFormData(prev => ({ ...prev, showOtpField: true }));
       setResendTimer(30);
@@ -113,13 +109,13 @@ const StandaloneBBD: React.FC = () => {
     try {
       setSuccessMessage('Verifying...');
       setError('');
-      const res = await axios.post('/api/auth/verify-otp', { email: formData.email, otp: formData.otp });
-      if (res.data.success) {
+      const res = await otpService.verifyOtp({ email: formData.email, otp: formData.otp });
+      if (res.success) {
         setSuccessMessage('Email verified successfully!');
         setOtpVerified(true);
         setFormData(prev => ({ ...prev, showOtpField: false, otp: '' }));
       } else {
-        setError(res.data.error || 'Invalid OTP');
+        setError(res.error || 'Invalid OTP');
         setSuccessMessage('');
       }
     } catch (err: any) {
@@ -201,33 +197,34 @@ const StandaloneBBD: React.FC = () => {
     if (cost === 0) {
       try {
         setSuccessMessage('Submitting quote request...');
-        await axios.post('/api/business/bookings', payload);
+        await bookingService.create({
+          ...payload,
+          bookingType: 'business',
+          status: 'custom_quote_requested'
+        });
         setSuccessMessage('Quote request submitted! Our team will contact you within 24 hours.');
         setIsApproved(false); setCost(null);
       } catch (err: any) {
-        setError(err.response?.data?.error || 'Failed to submit quote request.');
+        setError(err.message || 'Failed to submit quote request.');
       }
       return;
     }
 
     try {
       setSuccessMessage('Creating booking...');
-      const bookingRes = await axios.post('/api/business/bookings', payload);
-      if (bookingRes.data.success) {
-        const bookingId = bookingRes.data.booking_id;
-        setSuccessMessage('Redirecting to payment...');
-        const paymentRes = await axios.post('/api/payment/initiate', {
-          booking_id: bookingId, amount: cost / 2, phone: formData.phone, email: formData.email
-        });
-        if (paymentRes.data.success && paymentRes.data.payment_url) {
-          window.location.href = paymentRes.data.payment_url;
-        } else {
-          setError('Failed to initiate payment. Please contact support.');
-          setSuccessMessage('');
-        }
+      const bookingRes = await bookingService.create({
+        ...payload,
+        bookingType: 'business',
+        status: 'payment_pending',
+        cost: cost / 2
+      });
+      if (bookingRes.id) {
+        setSuccessMessage('Processing payment...');
+        await paymentService.initiatePayment(bookingRes.id, cost / 2);
+        setSuccessMessage('Payment successful! Booking confirmed.');
       }
     } catch (err: any) {
-      setError(err.response?.data?.error || 'Booking creation failed.');
+      setError(err.message || 'Booking creation failed.');
       setSuccessMessage('');
     }
   };

@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../contexts/AuthContext";
-import { api } from "../services/api";
+import { bookingService, otpService, paymentService } from "../services/api";
 
 const BusinessBookingForm: React.FC = () => {
 	const [formData, setFormData] = useState({
@@ -189,19 +189,12 @@ const BusinessBookingForm: React.FC = () => {
 		}
 
 		try {
-			await api.post("/auth/request-otp", {
-				email: formData.email,
-				user_type: "client",
-				user_data: {
-					name: formData.ownerName || "Business Owner",
-					business_name: formData.businessName || "Business",
-				},
-			});
+			await otpService.requestOtp({ email: formData.email });
 			setFormData((prev) => ({ ...prev, showOtpField: true }));
 			setSuccessMessage("OTP sent successfully to your email!");
 			setError("");
 		} catch (err: any) {
-			setError(err.response?.data?.message || "Failed to send OTP");
+			setError(err.message || "Failed to send OTP");
 			setSuccessMessage("");
 		}
 	};
@@ -222,17 +215,22 @@ const BusinessBookingForm: React.FC = () => {
 		}
 
 		try {
-			await api.post("/auth/verify-otp", {
-				phone: formData.phone,
+			const result = await otpService.verifyOtp({
+				email: formData.email,
 				otp: formData.otp,
 			});
+			if (!result.success) {
+				setError(result.error || "Invalid OTP");
+				setSuccessMessage("");
+				return;
+			}
 			setFormData((prev) => ({ ...prev, showOtpField: false, otp: "" }));
 			setSuccessMessage("Phone number verified successfully!");
 			setError("");
 			// Clear success message after 3 seconds
 			setTimeout(() => setSuccessMessage(""), 3000);
 		} catch (err: any) {
-			setError(err.response?.data?.message || "Invalid OTP");
+			setError(err.message || "Invalid OTP");
 			setSuccessMessage("");
 		}
 	};
@@ -344,8 +342,9 @@ const BusinessBookingForm: React.FC = () => {
 			// Handle custom quote submission
 			try {
 				setIsSubmitting(true);
-				await api.post("/bookings/business", {
+				await bookingService.create({
 					...formData,
+					bookingType: "business",
 					status: "custom_quote_requested",
 				});
 
@@ -355,10 +354,7 @@ const BusinessBookingForm: React.FC = () => {
 				);
 				navigate("/dashboard");
 			} catch (err: any) {
-				setError(
-					err.response?.data?.message ||
-						"Failed to submit custom quote request",
-				);
+				setError(err.message || "Failed to submit custom quote request");
 			} finally {
 				setIsSubmitting(false);
 			}
@@ -366,34 +362,23 @@ const BusinessBookingForm: React.FC = () => {
 			// Handle normal payment flow
 			try {
 				setIsSubmitting(true);
-				const response = await api.post("/bookings/business", {
+				const response = await bookingService.create({
 					...formData,
-					cost: cost / 2, // 50% payment
+					bookingType: "business",
+					cost: cost / 2,
 					status: "payment_pending",
 				});
 
-				const bookingId = response.data.booking_id;
-				if (!bookingId) {
+				if (!response.id) {
 					throw new Error("Booking created but booking id was not returned");
 				}
 
-				const paymentResponse = await api.post("/payment/initiate", {
-					booking_id: bookingId,
-					amount: cost / 2,
-					phone: formData.phone,
-					email: formData.email,
-				});
-
-				const paymentUrl =
-					paymentResponse.data.payment_url || paymentResponse.data.paymentUrl;
-				if (!paymentUrl) {
-					throw new Error("Payment gateway URL was not returned");
-				}
-
-				setIsPaymentPending(true);
-				window.location.href = paymentUrl;
+				await paymentService.initiatePayment(response.id, cost / 2);
+				setIsPaymentPending(false);
+				alert("Payment successful! Your booking is confirmed.");
+				navigate("/client");
 			} catch (err: any) {
-				setError(err.response?.data?.message || "Failed to process booking");
+				setError(err.message || "Failed to process booking");
 			} finally {
 				setIsSubmitting(false);
 			}

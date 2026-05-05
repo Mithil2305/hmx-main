@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
-import axios from "axios";
 import { useAuth } from "../contexts/AuthContext"; // context
+import { authService } from "../services/api";
 
 interface FormData {
 	email: string;
@@ -106,13 +106,15 @@ const LoginPage: React.FC = () => {
 		if (!fpEmail) return setFpError("Email is required");
 		setFpLoading(true);
 		try {
-			await axios.post("/api/auth/request-otp", {
-				email: fpEmail,
-				user_type: "user",
-			});
-			setFpStep("otp");
+			await authService.resetPassword(fpEmail);
+			setShowForgotPassword(false);
+			setFpStep("email");
+			setFpEmail("");
+			setFpOtp("");
+			setFpNewPassword("");
+			alert("Password reset email sent. Check your inbox.");
 		} catch (err: any) {
-			setFpError(err.response?.data.error || "Failed to send OTP");
+			setFpError(err.message || "Failed to send reset email");
 		} finally {
 			setFpLoading(false);
 		}
@@ -120,42 +122,12 @@ const LoginPage: React.FC = () => {
 
 	const verifyOtp = async () => {
 		setFpError("");
-		if (!fpOtp) return setFpError("OTP is required");
-		setFpLoading(true);
-		try {
-			await axios.post("/api/auth/verify-otp", {
-				email: fpEmail,
-				otp: fpOtp,
-			});
-			setFpStep("reset");
-		} catch (err: any) {
-			setFpError(err.response?.data.error || "OTP verification failed");
-		} finally {
-			setFpLoading(false);
-		}
+		setFpStep("reset");
 	};
 
 	const resetPassword = async () => {
 		setFpError("");
-		if (!fpNewPassword) return setFpError("Password is required");
-		setFpLoading(true);
-		try {
-			await axios.post("/api/auth/reset-password", {
-				email: fpEmail,
-				new_password: fpNewPassword,
-			});
-
-			setShowForgotPassword(false);
-			setFpStep("email");
-			setFpEmail("");
-			setFpOtp("");
-			setFpNewPassword("");
-			alert("Password reset successfully. You can now login.");
-		} catch (err: any) {
-			setFpError(err.response?.data.error || "Failed to reset password");
-		} finally {
-			setFpLoading(false);
-		}
+		setFpError("Use the reset email link to set a new password.");
 	};
 
 	return (

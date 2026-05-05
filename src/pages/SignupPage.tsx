@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { CheckCircle, ChevronDown } from 'lucide-react';
-import axios from 'axios';
+import { authService, otpService } from '../services/api';
 
 interface FormData {
   // Organization Details
@@ -113,15 +113,12 @@ const SignupPage: React.FC = () => {
   const handleSendOtp = async () => {
     try {
       setOtpError('');
-      await axios.post('/api/auth/request-otp', {
-        email: formData.email,
-        user_type: 'client',
-        user_data: formData
-      });
+      await otpService.requestOtp({ email: formData.email });
       setOtpSent(true);
       alert('OTP sent to your email. Please check your inbox.');
-    } catch (err: any) {
-      setOtpError(err.response?.data?.error || 'Failed to send OTP. Try again.');
+    } catch (err: unknown) {
+      const error = err as { response?: { data?: { error?: string } } };
+      setOtpError(error.response?.data?.error || 'Failed to send OTP. Try again.');
     }
   };
 
@@ -129,18 +126,19 @@ const SignupPage: React.FC = () => {
   const handleVerifyOtp = async () => {
     try {
       setOtpError('');
-      const res = await axios.post('/api/auth/verify-otp', {
+      const res = await otpService.verifyOtp({
         email: formData.email,
         otp: String(otp)
       });
-      if (res.data.success) {
+      if (res.success) {
         setOtpVerified(true);
         alert('OTP verified successfully!');
       } else {
-        setOtpError(res.data.error || 'Invalid OTP');
+        setOtpError(res.error || 'Invalid OTP');
       }
-    } catch (err: any) {
-      setOtpError(err.response?.data?.error || 'OTP verification failed.');
+    } catch (err: unknown) {
+      const error = err as { response?: { data?: { error?: string } } };
+      setOtpError(error.response?.data?.error || 'OTP verification failed.');
     }
   };
 
@@ -299,7 +297,7 @@ const SignupPage: React.FC = () => {
 
     try {
       // Register the user with all the new fields
-      const response = await axios.post('/api/auth/register', {
+      await authService.register({
         business_name: formData.businessName,
         contact_name: formData.contactName,
         email: formData.email,
@@ -318,20 +316,16 @@ const SignupPage: React.FC = () => {
         role: 'client'
       });
 
-      // Persist token if returned so dashboard loads seamlessly
-      if (response?.data?.token) {
-        localStorage.setItem('token', response.data.token);
-      }
-
       setIsFormSubmitted(true);
       // Show success message and redirect to client dashboard after 2 seconds
       setTimeout(() => {
         navigate('/client', { replace: true });
       }, 2000);
 
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error('Registration failed:', error);
-      alert(error.response?.data?.message || 'Registration failed. Please try again.');
+      const err = error as { response?: { data?: { message?: string } } };
+      alert(err.response?.data?.message || 'Registration failed. Please try again.');
     } finally {
       setIsSubmitting(false);
     }

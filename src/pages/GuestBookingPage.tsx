@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import axios from 'axios';
 import PhonePePayment from '../components/PhonePePayment';
+import { bookingService } from '../services/api';
 
 const GuestBookingPage: React.FC = () => {
   const navigate = useNavigate();
@@ -156,8 +156,12 @@ const GuestBookingPage: React.FC = () => {
           status: 'pending',
         };
 
-        const response = await axios.post('/api/guest/bookings', bookingData);
-        setCreatedBooking(response.data);
+        const response = await bookingService.create({
+          ...bookingData,
+          bookingType: 'guest',
+          createdAt: new Date().toISOString()
+        });
+        setCreatedBooking({ ...bookingData, id: response.id });
         // For custom quotes we do NOT show immediate payment UI
         setShowPhonePePayment(false);
         alert('Your FPV Event request has been submitted! Our team will contact you with a custom quote.');
@@ -180,8 +184,12 @@ const GuestBookingPage: React.FC = () => {
         referral_code: guestInfo.referral_code,
       };
 
-      const response = await axios.post('/api/guest/bookings', bookingData);
-      setCreatedBooking(response.data);
+      const response = await bookingService.create({
+        ...bookingData,
+        bookingType: 'guest',
+        createdAt: new Date().toISOString()
+      });
+      setCreatedBooking({ ...bookingData, id: response.id });
       setShowPhonePePayment(true);
     } catch (err: any) {
       setError(err.response?.data?.message || 'Failed to create booking');
