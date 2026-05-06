@@ -1,12 +1,84 @@
 import { localDB, localAuth, costCalculator, statsCalculator } from "./localStorageService";
 
+// Type definitions
+interface LoginData {
+	email: string;
+	password: string;
+	role: string;
+}
+
+interface RegisterData {
+	name?: string;
+	contact_name?: string;
+	email: string;
+	password: string;
+	phone?: string;
+	[other: string]: any;
+}
+
+interface PilotData extends RegisterData {
+	experience_years?: number;
+	expertise?: string[];
+}
+
+interface EditorData extends RegisterData {
+	specialization?: string;
+	skills?: string[];
+}
+
+interface ReferralData extends RegisterData {
+	referralType?: string;
+	business_name?: string;
+}
+
+interface BookingData {
+	client_id?: string;
+	client_name?: string;
+	client_email?: string;
+	pilot_id?: string;
+	editor_id?: string;
+	status?: string;
+	[property: string]: any;
+}
+
+
+interface BusinessBookingData {
+	businessSize?: string;
+	business_name?: string;
+	owner_name?: string;
+	email?: string;
+	[property: string]: any;
+}
+
+interface PaymentData {
+	status?: string;
+	admin_comments?: string;
+	pilot_id?: string | null;
+	editor_id?: string | null;
+	total_cost?: number | null;
+	payment_status?: string;
+}
+
+interface ProfileData {
+	[property: string]: any;
+}
+
+interface BusinessBooking {
+	id?: string;
+	status?: string;
+	business_name?: string;
+	owner_name?: string;
+	email?: string;
+	[property: string]: any;
+}
+
 // Auth Service - uses localStorage
 export const authService = {
-	register: async (data: any) => {
+	register: async (data: RegisterData) => {
 		return localAuth.register(data);
 	},
 
-	login: async (data: any) => {
+	login: async (data: LoginData) => {
 		return localAuth.login(data.email, data.password, data.role);
 	},
 
@@ -45,7 +117,7 @@ export const otpService = {
 };
 
 export const pilotService = {
-	register: async (data: any) => {
+	register: async (data: PilotData) => {
 		const id = localDB.pilots.create({
 			...data,
 			role: "pilot",
@@ -58,7 +130,7 @@ export const pilotService = {
 		});
 		return { id };
 	},
-	apply: async (data: any) => {
+	apply: async (data: PilotData) => {
 		const id = localDB.pilots.create({
 			...data,
 			role: "pilot",
@@ -77,14 +149,14 @@ export const pilotService = {
 	getById: async (id: string) => {
 		return localDB.pilots.getById(id);
 	},
-	update: async (id: string, data: any) => {
+	update: async (id: string, data: Partial<PilotData>) => {
 		localDB.pilots.update(id, data);
 		return { success: true };
 	},
 };
 
 export const editorService = {
-	register: async (data: any) => {
+	register: async (data: EditorData) => {
 		const id = localDB.editors.create({
 			...data,
 			role: "editor",
@@ -103,15 +175,15 @@ export const editorService = {
 	getById: async (id: string) => {
 		return localDB.editors.getById(id);
 	},
-	update: async (id: string, data: any) => {
+	update: async (id: string, data: Partial<EditorData>) => {
 		localDB.editors.update(id, data);
 		return { success: true };
 	},
 };
 
 export const referralService = {
-	register: async (data: any) => {
-		const referralCode = `REF${Math.random().toString(36).substr(2, 6).toUpperCase()}`;
+	register: async (data: ReferralData) => {
+		const referralCode = `REF${Math.random().toString(36).substring(2, 8).toUpperCase()}`;
 		const id = localDB.referrals.create({
 			...data,
 			role: "referral",
@@ -138,7 +210,7 @@ export const referralService = {
 };
 
 export const bookingService = {
-	create: async (data: any) => {
+	create: async (data: BookingData) => {
 		const id = localDB.bookings.create(data);
 		return { id };
 	},
@@ -217,7 +289,7 @@ export const bookingService = {
 		return { success: true };
 	},
 
-	update: async (bookingId: string, data: any) => {
+	update: async (bookingId: string, data: Partial<BookingData>) => {
 		localDB.bookings.update(bookingId, data);
 		return { success: true };
 	},
@@ -270,7 +342,7 @@ export const messageService = {
 	getAll: async (userId: string, userRole: string, partnerId?: string) => {
 		const messages = localDB.messages.getByUserId(userId);
 		const filtered = partnerId
-			? messages.filter((m: any) => 
+			? messages.filter((m: Message) => 
 					m.sender_id === partnerId || m.receiver_id === partnerId
 				)
 			: messages;
@@ -326,7 +398,7 @@ export const adminService = {
 };
 
 export const businessBookingService = {
-	create: async (data: any, userId: string) => {
+	create: async (data: BusinessBookingData, userId: string) => {
 		const cost = costCalculator.calculateBusinessBookingCost(data.businessSize || "small");
 		const id = localDB.businessBookings.create({
 			...data,
@@ -344,8 +416,8 @@ export const businessBookingService = {
 	getAll: async (status?: string, search?: string) => {
 		const bookings = localDB.businessBookings.getAll();
 		return bookings
-			.filter((booking: any) => (status ? booking.status === status : true))
-			.filter((booking: any) => {
+			.filter((booking: BusinessBooking) => (status ? booking.status === status : true))
+			.filter((booking: BusinessBooking) => {
 				if (!search) return true;
 				const haystack = `${booking.business_name || ""} ${booking.owner_name || ""} ${booking.email || ""}`.toLowerCase();
 				return haystack.includes(search.toLowerCase());
@@ -362,14 +434,7 @@ export const businessBookingService = {
 
 	updateOrder: async (
 		bookingId: string,
-		payload: {
-			status?: string;
-			admin_comments?: string;
-			pilot_id?: string | null;
-			editor_id?: string | null;
-			total_cost?: number | null;
-			payment_status?: string;
-		},
+		payload: PaymentData,
 	) => {
 		localDB.businessBookings.update(bookingId, payload);
 		return { success: true };
@@ -383,7 +448,7 @@ export const businessBookingService = {
 
 export const paymentService = {
 	initiatePayment: async (bookingId: number | string, amount: number, bookingType: "booking" | "business_booking" = "booking") => {
-		const paymentId = `TXN${Date.now()}_${Math.random().toString(36).substr(2, 9).toUpperCase()}`;
+		const paymentId = `TXN${Date.now()}_${Math.random().toString(36).substring(2, 10).toUpperCase()}`;
 		localDB.payments.create({
 			id: paymentId,
 			booking_id: bookingId,
@@ -419,7 +484,7 @@ export const paymentService = {
 		refundAmount: number,
 		refundNote?: string,
 	) => {
-		const refundId = `REF${Date.now()}_${Math.random().toString(36).substr(2, 6).toUpperCase()}`;
+		const refundId = `REF${Date.now()}_${Math.random().toString(36).substring(2, 7).toUpperCase()}`;
 		localDB.payments.create({
 			id: refundId,
 			merchant_transaction_id: transactionId,
@@ -434,7 +499,7 @@ export const paymentService = {
 
 // Client profile service
 export const clientService = {
-	updateProfile: async (userId: string, data: any) => {
+	updateProfile: async (userId: string, data: ProfileData) => {
 		localDB.users.update(userId, data);
 		return { success: true };
 	},
