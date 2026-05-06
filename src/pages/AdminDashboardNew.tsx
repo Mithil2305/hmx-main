@@ -30,6 +30,7 @@ import Applications from '../components/admin/Applications';
 import EmailTemplates from '../components/admin/EmailTemplates';
 import FPVEvents from '../components/admin/FPVEvents';
 import BusinessBookings from '../components/admin/BusinessBookings';
+import DemoDataSeeder from '../components/admin/DemoDataSeeder';
 
 const AdminDashboard: React.FC = () => {
   const { isAuthenticated, user, logout, isLoading } = useAuth();
@@ -89,6 +90,7 @@ const AdminDashboard: React.FC = () => {
     { path: '/admin/email-templates', icon: <Mail size={20} />, label: 'Email Templates' }
     , { path: '/admin/fpv-events', icon: <Video size={20} />, label: 'FPV Events' }
     , { path: '/admin/business-bookings', icon: <Briefcase size={20} />, label: 'Business Bookings' }
+    , { path: '/admin/demo-data', icon: <Database size={20} />, label: 'Demo Data' }
   ];
 
   if (isLoading) {
@@ -247,6 +249,7 @@ const AdminDashboard: React.FC = () => {
               <Route path="/email-templates" element={<EmailTemplates />} />
               <Route path="/fpv-events" element={<FPVEvents />} />
               <Route path="/business-bookings" element={<BusinessBookings />} />
+              <Route path="/demo-data" element={<DemoDataSeeder />} />
             </Routes>
           </div>
         </div>

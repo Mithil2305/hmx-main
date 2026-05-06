@@ -1,13 +1,10 @@
 import React, { createContext, useContext, useState, useEffect } from "react";
-import { onAuthStateChanged } from "firebase/auth";
-import { authService } from "../services/api";
-import { auth } from "../services/firebase";
-import { getUserProfile, updateRecord } from "../services/firestoreService";
+import { localAuth, localDB } from "../services/localStorageService";
 
 interface AuthContextType {
 	isAuthenticated: boolean;
 	user: any | null;
-	login: (email: string, password: string) => Promise<void>;
+	login: (email: string, password: string, role?: string) => Promise<void>;
 	register: (data: any) => Promise<void>;
 	logout: () => void;
 	verifyToken: () => Promise<boolean>;
@@ -27,23 +24,40 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
 	const [hasCompletedBBD, setHasCompletedBBD] = useState<boolean>(false);
 
 	const verifyToken = async (): Promise<boolean> => {
-		const currentUser = auth.currentUser;
-		if (!currentUser) {
-			setIsLoading(false);
-			return false;
-		}
-
 		try {
-			const userData = await getUserProfile(currentUser.uid);
-			if (!userData) {
+			const currentUser = localAuth.getCurrentUser();
+			if (!currentUser) {
 				setUser(null);
 				setIsAuthenticated(false);
 				setHasCompletedBBD(false);
 				setIsLoading(false);
 				return false;
 			}
-			setUser({ ...userData, uid: currentUser.uid });
-			setHasCompletedBBD(Boolean(userData.hasCompletedBBD));
+
+			// Refresh user data from localStorage
+			let freshUser = null;
+			if (currentUser.role === "pilot") {
+				freshUser = localDB.pilots.getById(currentUser.id || currentUser.user_id);
+			} else if (currentUser.role === "editor") {
+				freshUser = localDB.editors.getById(currentUser.id || currentUser.user_id);
+			} else if (currentUser.role === "referral") {
+				freshUser = localDB.referrals.getById(currentUser.id || currentUser.user_id);
+			} else {
+				freshUser = localDB.users.getById(currentUser.id || currentUser.user_id);
+			}
+
+			if (!freshUser) {
+				localAuth.logout();
+				setUser(null);
+				setIsAuthenticated(false);
+				setHasCompletedBBD(false);
+				setIsLoading(false);
+				return false;
+			}
+
+			const userData = { ...freshUser, role: currentUser.role };
+			setUser(userData);
+			setHasCompletedBBD(Boolean(freshUser.has_completed_bbd));
 			setIsAuthenticated(true);
 			setIsLoading(false);
 			return true;
@@ -57,13 +71,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
 		}
 	};
 
-	const login = async (email: string, password: string) => {
+	const login = async (email: string, password: string, role?: string) => {
 		setIsLoading(true);
 		try {
-			const response = await authService.login({ email, password });
+			const response = localAuth.login(email, password, role);
 			setUser(response.user || null);
 			setIsAuthenticated(true);
-			setHasCompletedBBD(Boolean(response.user?.hasCompletedBBD));
+			setHasCompletedBBD(Boolean(response.user?.has_completed_bbd));
 			setIsLoading(false);
 		} catch (error) {
 			setIsAuthenticated(false);
@@ -76,7 +90,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
 	const register = async (data: any) => {
 		setIsLoading(true);
 		try {
-			await authService.register(data);
+			await localAuth.register(data);
 			await verifyToken();
 		} catch (error) {
 			console.error("Registration failed:", error);
@@ -86,28 +100,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
 	};
 
 	const logout = () => {
-		authService.logout();
+		localAuth.logout();
 		setIsAuthenticated(false);
 		setUser(null);
 		setHasCompletedBBD(false);
 	};
 
 	useEffect(() => {
-		const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
-			if (!currentUser) {
-				setUser(null);
-				setIsAuthenticated(false);
-				setHasCompletedBBD(false);
+		// Check for existing session on mount
+		const checkSession = async () => {
+			const currentUser = localAuth.getCurrentUser();
+			if (currentUser) {
+				await verifyToken();
+			} else {
 				setIsLoading(false);
-				return;
 			}
-			const profile = await getUserProfile(currentUser.uid);
-			setUser(profile ? { ...profile, uid: currentUser.uid } : null);
-			setIsAuthenticated(Boolean(profile));
-			setHasCompletedBBD(Boolean(profile?.hasCompletedBBD));
-			setIsLoading(false);
-		});
-		return () => unsubscribe();
+		};
+		checkSession();
 	}, []);
 
 	return (
@@ -123,9 +132,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
 				hasCompletedBBD,
 				setHasCompletedBBD: (completed: boolean) => {
 					setHasCompletedBBD(completed);
-					if (user?.uid) {
-						updateRecord("users", user.uid, {
-							hasCompletedBBD: completed,
+					if (user?.id || user?.user_id) {
+						const userId = user.id || user.user_id;
+						localDB.users.update(userId, {
+							has_completed_bbd: completed,
 						});
 					}
 				},

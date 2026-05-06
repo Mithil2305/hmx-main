@@ -1,64 +1,40 @@
-import React, {
-	createContext,
-	useContext,
-	useEffect,
-	useMemo,
-	useState,
-} from "react";
-import { io, Socket } from "socket.io-client";
-import { useAuth } from "./AuthContext";
+import React, { createContext, useContext, useMemo } from "react";
+
+// SocketContext disabled for frontend-only build
+// Real-time features require a backend server which is not available in this build
 
 type SocketContextValue = {
-	socket: Socket | null;
+	socket: null;
 	isConnected: boolean;
+	sendMessage: (_receiverId: string, _content: string) => Promise<boolean>;
+	isFeatureAvailable: boolean;
 };
 
 const SocketContext = createContext<SocketContextValue>({
 	socket: null,
 	isConnected: false,
+	sendMessage: async () => false,
+	isFeatureAvailable: false,
 });
 
 export const SocketProvider: React.FC<{ children: React.ReactNode }> = ({
 	children,
 }) => {
-	const { isAuthenticated } = useAuth();
-	const [socket, setSocket] = useState<Socket | null>(null);
-	const [isConnected, setIsConnected] = useState(false);
+	// Socket functionality disabled for frontend-only build
+	const sendMessage = async (): Promise<boolean> => {
+		console.warn("Socket messaging is not available in frontend-only mode");
+		return false;
+	};
 
-	useEffect(() => {
-		const token = localStorage.getItem("token");
-
-		if (!isAuthenticated || !token) {
-			if (socket) {
-				socket.disconnect();
-			}
-			setSocket(null);
-			setIsConnected(false);
-			return;
-		}
-
-		const nextSocket = io("http://localhost:5001", {
-			transports: ["websocket"],
-			auth: { token },
-		});
-
-		const handleConnect = () => setIsConnected(true);
-		const handleDisconnect = () => setIsConnected(false);
-
-		nextSocket.on("connect", handleConnect);
-		nextSocket.on("disconnect", handleDisconnect);
-
-		setSocket(nextSocket);
-
-		return () => {
-			nextSocket.off("connect", handleConnect);
-			nextSocket.off("disconnect", handleDisconnect);
-			nextSocket.disconnect();
-		};
-		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [isAuthenticated]);
-
-	const value = useMemo(() => ({ socket, isConnected }), [socket, isConnected]);
+	const value = useMemo(
+		() => ({
+			socket: null,
+			isConnected: false,
+			sendMessage,
+			isFeatureAvailable: false,
+		}),
+		[]
+	);
 
 	return (
 		<SocketContext.Provider value={value}>{children}</SocketContext.Provider>

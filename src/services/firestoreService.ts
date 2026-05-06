@@ -1,6 +1,7 @@
 import {
 	addDoc,
 	collection,
+	deleteDoc,
 	doc,
 	getDoc,
 	getDocs,
@@ -12,7 +13,10 @@ import {
 } from "firebase/firestore";
 import { db } from "./firebase";
 
-export const createUserProfile = async (uid: string, data: Record<string, any>) => {
+export const createUserProfile = async (
+	uid: string,
+	data: Record<string, any>,
+) => {
 	await setDoc(
 		doc(db, "users", uid),
 		{
@@ -23,7 +27,10 @@ export const createUserProfile = async (uid: string, data: Record<string, any>) 
 	);
 };
 
-export const ensureUserProfile = async (uid: string, data: Record<string, any>) => {
+export const ensureUserProfile = async (
+	uid: string,
+	data: Record<string, any>,
+) => {
 	await addOrMergeDoc("users", uid, {
 		...data,
 		createdAt: serverTimestamp(),
@@ -45,7 +52,16 @@ export const getUserProfile = async (uid: string) => {
 	return { id: snapshot.id, ...snapshot.data() };
 };
 
-export const createRecord = async (collectionName: string, data: Record<string, any>) => {
+export const getRecord = async (collectionName: string, id: string) => {
+	const snapshot = await getDoc(doc(db, collectionName, id));
+	if (!snapshot.exists()) return null;
+	return { id: snapshot.id, ...snapshot.data() };
+};
+
+export const createRecord = async (
+	collectionName: string,
+	data: Record<string, any>,
+) => {
 	const snapshot = await addDoc(collection(db, collectionName), {
 		...data,
 		createdAt: serverTimestamp(),
@@ -65,9 +81,16 @@ export const updateRecord = async (
 	});
 };
 
+export const deleteRecord = async (collectionName: string, id: string) => {
+	await deleteDoc(doc(db, collectionName, id));
+};
+
 export const getRecords = async (collectionName: string) => {
 	const snapshot = await getDocs(collection(db, collectionName));
-	return snapshot.docs.map((docSnap) => ({ id: docSnap.id, ...docSnap.data() }));
+	return snapshot.docs.map((docSnap) => ({
+		id: docSnap.id,
+		...docSnap.data(),
+	}));
 };
 
 export const getRecordsByField = async (
@@ -78,5 +101,8 @@ export const getRecordsByField = async (
 	const snapshot = await getDocs(
 		query(collection(db, collectionName), where(field, "==", value)),
 	);
-	return snapshot.docs.map((docSnap) => ({ id: docSnap.id, ...docSnap.data() }));
+	return snapshot.docs.map((docSnap) => ({
+		id: docSnap.id,
+		...docSnap.data(),
+	}));
 };

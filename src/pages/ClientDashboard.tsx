@@ -21,17 +21,32 @@ import {
 	MapPin,
 	Clock,
 	Briefcase,
+	WifiOff,
 } from "lucide-react";
-import axios from "axios";
-import { messageService, Message } from "../services/api";
+import { clientService, messageService, Message } from "../services/api";
+import { localAuth, localDB } from "../services/localStorageService";
+import { useAuth } from "../contexts/AuthContext";
 import { useSocket } from "../contexts/SocketContext";
 
 const normalizeStatus = (status?: string) => (status || "").toUpperCase();
+
+// Frontend-only notice component
+const FrontendOnlyNotice: React.FC = () => (
+	<div className="fixed bottom-4 right-4 z-50">
+		<div className="bg-amber-50 border border-amber-200 rounded-lg px-4 py-2 shadow-lg flex items-center gap-2">
+			<WifiOff size={16} className="text-amber-600" />
+			<span className="text-xs text-amber-700 font-medium">
+				Frontend-only mode (no backend)
+			</span>
+		</div>
+	</div>
+);
 
 const ClientDashboard: React.FC = () => {
 	const [isSidebarOpen, setIsSidebarOpen] = useState(true);
 	const navigate = useNavigate();
 	const location = useLocation();
+	const { user: authUser } = useAuth();
 	const [userData, setUserData] = useState<any>(null);
 	const [isLoading, setIsLoading] = useState(true);
 	const [bookings, setBookings] = useState<any[]>([]);
@@ -46,29 +61,40 @@ const ClientDashboard: React.FC = () => {
 		const fetchUserData = async () => {
 			try {
 				setIsLoading(true);
-				const token = localStorage.getItem("token");
-				const [verifyRes, bookingsRes] = await Promise.all([
-					axios.get("/api/auth/verify", {
-						headers: { Authorization: `Bearer ${token}` },
-					}),
-					axios.get("/api/clients/bookings", {
-						headers: { Authorization: `Bearer ${token}` },
-					}),
-				]);
-				const fetchedUser = verifyRes.data;
+				
+				// Get current user from local auth
+				const currentUser = localAuth.getCurrentUser();
+				if (!currentUser) {
+					navigate("/login");
+					return;
+				}
+
 				// Ensure only client/business users can access this dashboard
-				if (fetchedUser.role !== 'client' && fetchedUser.role !== 'business') {
+				if (currentUser.role !== 'client' && currentUser.role !== 'business') {
 					const roleRoutes: Record<string, string> = {
 						admin: '/admin', pilot: '/pilot',
 						editor: '/editor', referral: '/referral', guest: '/guest-booking',
 					};
-					navigate(roleRoutes[fetchedUser.role] || '/login', { replace: true });
+					navigate(roleRoutes[currentUser.role] || '/login', { replace: true });
 					return;
 				}
-				setUserData(fetchedUser);
-				if (bookingsRes.data.success) {
-					setBookings(bookingsRes.data.bookings || []);
-					setStats(bookingsRes.data.stats);
+
+				// Refresh user data from localStorage
+				const userId = currentUser.id || currentUser.user_id;
+				const freshUser = localDB.users.getById(userId);
+				if (!freshUser) {
+					navigate("/login");
+					return;
+				}
+
+				const userWithRole = { ...freshUser, role: currentUser.role, user_id: userId };
+				setUserData(userWithRole);
+
+				// Get bookings and stats from local service
+				const bookingsRes = await clientService.getBookings(userId);
+				if (bookingsRes.success) {
+					setBookings(bookingsRes.bookings || []);
+					setStats(bookingsRes.stats);
 				}
 			} catch (err) {
 				console.error("Failed to fetch user data:", err);
@@ -79,7 +105,7 @@ const ClientDashboard: React.FC = () => {
 		};
 
 		fetchUserData();
-	}, [navigate]);
+	}, [navigate, authUser]);
 
 	const menuItems = [
 		{
@@ -109,7 +135,7 @@ const ClientDashboard: React.FC = () => {
 	];
 
 	const handleLogout = () => {
-		localStorage.removeItem("token");
+		localAuth.logout();
 		navigate("/login", { replace: true });
 	};
 
@@ -263,7 +289,7 @@ const ClientDashboard: React.FC = () => {
 							{menuItems.map((item) => (
 								<Route
 									key={item.path}
-									path={item.path.replace("/client", "")}
+									path={item.path.replace('/client', '')}
 									element={item.component}
 								/>
 							))}
@@ -271,6 +297,7 @@ const ClientDashboard: React.FC = () => {
 					</div>
 				</div>
 			</div>
+			<FrontendOnlyNotice />
 		</div>
 	);
 };

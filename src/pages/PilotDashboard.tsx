@@ -22,8 +22,9 @@ import {
 	Play,
 	Eye,
 } from "lucide-react";
-import axios from "axios";
 import { useAuth } from "../contexts/AuthContext";
+import { localAuth, localDB, statsCalculator } from "../services/localStorageService";
+import { bookingService } from "../services/api";
 import VideoSubmissions from "../components/pilot/VideoSubmissions";
 import BookingDetailsModal from "../components/common/BookingDetailsModal";
 
@@ -55,14 +56,13 @@ const PilotDashboard: React.FC = () => {
 		const fetchUserData = async () => {
 			try {
 				setIsLoading(true);
-				const token = localStorage.getItem("token");
-				const response = await axios.get("/api/auth/verify", {
-					headers: { Authorization: `Bearer ${token}` },
-				});
-				console.log("User data received:", response.data);
-				const fetchedUser = response.data;
+				const currentUser = localAuth.getCurrentUser();
+				if (!currentUser) {
+					navigate("/login");
+					return;
+				}
 				// Ensure only pilots can access this dashboard
-				if (fetchedUser.role !== "pilot") {
+				if (currentUser.role !== "pilot") {
 					const roleRoutes: Record<string, string> = {
 						admin: "/admin",
 						client: "/client",
@@ -71,11 +71,18 @@ const PilotDashboard: React.FC = () => {
 						referral: "/referral",
 						guest: "/guest-booking",
 					};
-					navigate(roleRoutes[fetchedUser.role] || "/login", { replace: true });
+					navigate(roleRoutes[currentUser.role] || "/login", { replace: true });
 					return;
 				}
-				setUserData(fetchedUser);
-				await fetchStats();
+				const pilotId = currentUser.id || currentUser.user_id;
+				const freshUser = localDB.pilots.getById(pilotId);
+				if (!freshUser) {
+					navigate("/login");
+					return;
+				}
+				const userWithRole = { ...freshUser, role: "pilot", user_id: pilotId };
+				setUserData(userWithRole);
+				await fetchStats(pilotId);
 			} catch (err) {
 				console.error("Failed to fetch user data:", err);
 				navigate("/login");
@@ -87,24 +94,11 @@ const PilotDashboard: React.FC = () => {
 		fetchUserData();
 	}, [navigate]);
 
-	const fetchStats = async () => {
+	const fetchStats = async (pilotId: string) => {
 		try {
-			const token = localStorage.getItem("token");
-
-			// First test if the simple endpoint works
-			try {
-				const testResponse = await axios.get("/api/pilot/test-simple");
-				console.log("Simple test endpoint works:", testResponse.data);
-			} catch (testErr) {
-				console.error("Simple test endpoint failed:", testErr);
-			}
-
-			// Use the modified assigned-orders endpoint that now returns all orders
-			const response = await axios.get("/api/pilot/assigned-orders", {
-				headers: { Authorization: `Bearer ${token}` },
-			});
-
-			const allOrders = response.data;
+			// Get pilot stats from localStorage
+			const pilotStats = statsCalculator.getPilotStats(pilotId);
+			const allOrders = localDB.bookings.getByPilotId(pilotId);
 			const ongoingOrders = allOrders.filter(
 				(b: any) => normalizeStatus(b.status) !== "COMPLETED",
 			);
@@ -114,14 +108,11 @@ const PilotDashboard: React.FC = () => {
 			const cancelledOrders = allOrders.filter((b: any) =>
 				["CANCELLED", "REJECTED"].includes(normalizeStatus(b.status)),
 			);
-
 			const stats = {
 				ongoingOrders: ongoingOrders.length,
 				completedOrders: completedOrders.length,
 				cancelledOrders: cancelledOrders.length,
-				totalEarnings: completedOrders
-					.filter((b: any) => b.payment_status === "paid")
-					.reduce((sum: number, b: any) => sum + (b.payment_amount || 0), 0),
+				totalEarnings: pilotStats.totalEarnings || 0,
 			};
 			setStats(stats);
 		} catch (err) {
@@ -411,12 +402,12 @@ const OngoingOrdersContent: React.FC = () => {
 
 	const fetchOngoingOrders = async () => {
 		try {
-			const token = localStorage.getItem("token");
-			const response = await axios.get("/api/pilot/assigned-orders", {
-				headers: { Authorization: `Bearer ${token}` },
-			});
+			const currentUser = localAuth.getCurrentUser();
+			if (!currentUser) return;
+			const pilotId = currentUser.id || currentUser.user_id;
+			const allOrders = localDB.bookings.getByPilotId(pilotId);
 			// Filter for ongoing orders only
-			const ongoingOrders = response.data.filter(
+			const ongoingOrders = allOrders.filter(
 				(order: any) => normalizeStatus(order.status) !== "COMPLETED",
 			);
 			setOrders(ongoingOrders);
@@ -573,12 +564,12 @@ const CompletedOrdersContent: React.FC = () => {
 
 	const fetchCompletedOrders = async () => {
 		try {
-			const token = localStorage.getItem("token");
-			const response = await axios.get("/api/pilot/assigned-orders", {
-				headers: { Authorization: `Bearer ${token}` },
-			});
+			const currentUser = localAuth.getCurrentUser();
+			if (!currentUser) return;
+			const pilotId = currentUser.id || currentUser.user_id;
+			const allOrders = localDB.bookings.getByPilotId(pilotId);
 			// Filter for completed orders only
-			const completedOrders = response.data.filter(
+			const completedOrders = allOrders.filter(
 				(order: any) => normalizeStatus(order.status) === "COMPLETED",
 			);
 			setOrders(completedOrders);
@@ -721,17 +712,17 @@ const CancelledOrdersContent: React.FC = () => {
 
 	const fetchCancelledOrders = async () => {
 		try {
-			const token = localStorage.getItem("token");
-			const response = await axios.get("/api/pilot/assigned-orders", {
-				headers: { Authorization: `Bearer ${token}` },
-			});
+			const currentUser = localAuth.getCurrentUser();
+			if (!currentUser) return;
+			const pilotId = currentUser.id || currentUser.user_id;
+			const allOrders = localDB.bookings.getByPilotId(pilotId);
 			// Filter for cancelled/rejected orders only
-			const cancelledOrders = response.data.filter((order: any) =>
+			const cancelledOrders = allOrders.filter((order: any) =>
 				["CANCELLED", "REJECTED"].includes(normalizeStatus(order.status)),
 			);
 			setOrders(cancelledOrders);
 			setLoading(false);
-		} catch (err) {
+		} catch (_err) {
 			setError("Failed to fetch cancelled orders");
 			setLoading(false);
 		}
@@ -788,13 +779,17 @@ const FinalReviewContent: React.FC = () => {
 
 	const fetchFinalReviewOrders = async () => {
 		try {
-			const token = localStorage.getItem("token");
-			const response = await axios.get("/api/pilot/final-review", {
-				headers: { Authorization: `Bearer ${token}` },
-			});
-			setOrders(response.data);
+			const currentUser = localAuth.getCurrentUser();
+			if (!currentUser) return;
+			const pilotId = currentUser.id || currentUser.user_id;
+			// Get orders in review status
+			const allOrders = localDB.bookings.getByPilotId(pilotId);
+			const reviewOrders = allOrders.filter((order: any) =>
+				["review", "edit_submitted"].includes(order.status)
+			);
+			setOrders(reviewOrders);
 			setLoading(false);
-		} catch (err) {
+		} catch (_err) {
 			setError("Failed to fetch final review orders");
 			setLoading(false);
 		}
